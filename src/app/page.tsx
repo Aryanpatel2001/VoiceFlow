@@ -1,8 +1,35 @@
-/** Minimal home for base commit. Replaced on feature/landing. */
+import {
+  Navigation,
+  HeroSection,
+  SocialProofTicker,
+  ValuePropositions,
+  ProductDemo,
+  FeaturesGrid,
+  ROICalculator,
+  TestimonialsCarousel,
+  PricingSection,
+  FAQSection,
+  FinalCTA,
+  Footer,
+} from "@/components/landing";
+
 export default function HomePage() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
-      <h1 className="text-2xl font-bold">VoiceFlow Pro</h1>
+    <div className="min-h-screen bg-background text-foreground transition-colors duration-300">
+      <Navigation />
+      <main>
+        <HeroSection />
+        <SocialProofTicker />
+        <ValuePropositions />
+        <ProductDemo />
+        <FeaturesGrid />
+        <ROICalculator />
+        <TestimonialsCarousel />
+        <PricingSection />
+        <FAQSection />
+        <FinalCTA />
+      </main>
+      <Footer />
     </div>
   );
 }
