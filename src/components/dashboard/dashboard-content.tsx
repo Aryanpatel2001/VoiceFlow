@@ -18,7 +18,6 @@ import {
   TrendingUp,
   TrendingDown,
   Users,
-  Zap,
   ArrowRight,
   CheckCircle2,
   XCircle,

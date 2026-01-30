@@ -87,7 +87,6 @@ export const authOptions: NextAuthOptions = {
   // Custom pages
   pages: {
     signIn: "/login",
-    signUp: "/signup",
     error: "/login",
     verifyRequest: "/verify-email",
     newUser: "/onboarding",
@@ -140,7 +139,7 @@ export const authOptions: NextAuthOptions = {
     },
 
     // Control if user is allowed to sign in
-    async signIn({ user, account, profile }) {
+    async signIn({ account, profile }) {
       // For OAuth, we might need to create the user
       if (account?.provider === "google" && profile?.email) {
         const existingUser = await findUserByEmail(profile.email);
@@ -149,8 +148,8 @@ export const authOptions: NextAuthOptions = {
           await createUser({
             email: profile.email,
             password: crypto.randomUUID(), // Random password for OAuth users
-            firstName: (profile as any).given_name,
-            lastName: (profile as any).family_name,
+            firstName: (profile as Record<string, string>).given_name,
+            lastName: (profile as Record<string, string>).family_name,
           });
         }
       }

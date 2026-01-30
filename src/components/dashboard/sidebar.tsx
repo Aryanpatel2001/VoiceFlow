@@ -7,13 +7,13 @@
 
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
   Phone,
+  PhoneCall,
   GitBranch,
   BarChart3,
   Plug,
@@ -51,6 +51,12 @@ const mainNavItems: NavItem[] = [
     label: "Agent Canvas",
     href: "/dashboard/canvas",
     icon: <GitBranch className="h-5 w-5" />,
+  },
+  {
+    label: "Phone Numbers",
+    href: "/dashboard/phone-numbers",
+    icon: <PhoneCall className="h-5 w-5" />,
+    badge: "New",
   },
   {
     label: "Knowledge Base",
@@ -166,7 +172,11 @@ export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
               <NavLink
                 key={item.href}
                 item={item}
-                isActive={pathname === item.href}
+                isActive={
+                  item.href === "/dashboard"
+                    ? pathname === "/dashboard"
+                    : pathname.startsWith(item.href)
+                }
                 collapsed={collapsed}
               />
             ))}
