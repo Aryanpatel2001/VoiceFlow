@@ -2,7 +2,7 @@
  * Flow Validation
  *
  * Validates flow structure, node configurations, and connections.
- * Ensures flows are complete and error-free before publishing.
+ * 6 node types: start, conversation, function, call_transfer, set_variable, end
  *
  * @module lib/canvas/validation
  */
@@ -14,15 +14,13 @@ import type {
   ValidationResult,
   ValidationError,
   ValidationWarning,
-  AIAgentConfig,
-  ConditionConfig,
-  SetVariableConfig,
-  APICallConfig,
-  TransferConfig,
-  KnowledgeBaseConfig,
+  ConversationConfig,
   FunctionConfig,
+  CallTransferConfig,
+  SetVariableConfig,
+  EndConfig,
+  StartConfig,
 } from "./types";
-import { getOutputHandles } from "./node-configs";
 
 // ============================================
 // Main Validation Function
@@ -39,8 +37,7 @@ export function validateFlow(
   // Structure validations
   validateStartNode(nodes, errors);
   validateOrphanedNodes(nodes, edges, errors);
-  validateConnections(nodes, edges, errors);
-  validateNoInfiniteLoops(nodes, edges, warnings);
+  validateConnections(nodes, edges, warnings);
 
   // Node-specific validations
   for (const node of nodes) {
@@ -89,7 +86,6 @@ function validateOrphanedNodes(
   const connectedNodeIds = new Set<string>();
   const queue = [startNode.id];
 
-  // BFS to find all reachable nodes
   while (queue.length > 0) {
     const nodeId = queue.shift()!;
     if (connectedNodeIds.has(nodeId)) continue;
@@ -103,7 +99,6 @@ function validateOrphanedNodes(
     }
   }
 
-  // Find orphaned nodes
   for (const node of nodes) {
     if (node.type !== "start" && !connectedNodeIds.has(node.id)) {
       errors.push({
@@ -118,24 +113,37 @@ function validateOrphanedNodes(
 function validateConnections(
   nodes: FlowNode[],
   edges: FlowEdge[],
-  errors: ValidationError[]
+  warnings: ValidationWarning[]
 ): void {
   for (const node of nodes) {
-    // Skip terminal nodes
-    if (node.type === "transfer" || node.type === "end_call") continue;
+    // End nodes have no outputs
+    if (node.type === "end") continue;
 
-    const isStartNode = node.type === "start";
-
-    // Check if node has outgoing connections
     const outgoingEdges = edges.filter((e) => e.source === node.id);
 
-    if (outgoingEdges.length === 0) {
-      // Start node might not have connections in empty flow
-      const hasNodesAfterStart = nodes.length > 1;
-      if (isStartNode && !hasNodesAfterStart) continue;
+    // Nodes with transitions (conversation, function) - check transition handles
+    if (node.type === "conversation" || node.type === "function") {
+      const config = node.data.config as ConversationConfig | FunctionConfig;
+      const transitions = config.transitions ?? [];
 
-      if (!isStartNode) {
-        errors.push({
+      for (const transition of transitions) {
+        const hasEdge = outgoingEdges.some(
+          (e) => e.sourceHandle === transition.handle
+        );
+        if (!hasEdge) {
+          warnings.push({
+            nodeId: node.id,
+            message: `Transition "${transition.label || transition.condition}" has no connection`,
+            code: "UNCONNECTED_TRANSITION",
+          });
+        }
+      }
+    }
+
+    // Simple output nodes (start, set_variable) should have an outgoing edge
+    if (node.type === "start" || node.type === "set_variable") {
+      if (outgoingEdges.length === 0 && nodes.length > 1) {
+        warnings.push({
           nodeId: node.id,
           message: `Node "${node.data.label}" has no outgoing connections`,
           code: "NO_OUTGOING_CONNECTION",
@@ -143,74 +151,19 @@ function validateConnections(
       }
     }
 
-    // Check condition nodes have all branches connected
-    if (node.type === "condition") {
-      const expectedHandles = getOutputHandles("condition", node.data.config);
-      for (const handle of expectedHandles) {
-        const hasEdge = outgoingEdges.some((e) => e.sourceHandle === handle);
-        if (!hasEdge) {
-          errors.push({
-            nodeId: node.id,
-            message: `Condition "${node.data.label}" is missing connection for "${handle}" branch`,
-            code: "MISSING_BRANCH_CONNECTION",
-          });
-        }
-      }
-    }
-
-    // Check API call nodes have error handle
-    if (node.type === "api_call") {
-      const hasErrorHandle = outgoingEdges.some((e) => e.sourceHandle === "error");
-      if (!hasErrorHandle) {
-        errors.push({
+    // Call transfer should have a transfer_failed connection
+    if (node.type === "call_transfer") {
+      const hasFailedEdge = outgoingEdges.some(
+        (e) => e.sourceHandle === "transfer_failed"
+      );
+      if (!hasFailedEdge) {
+        warnings.push({
           nodeId: node.id,
-          message: `API Call "${node.data.label}" should have an error connection`,
-          code: "MISSING_ERROR_HANDLE",
+          message: `Call Transfer "${node.data.label}" has no "Transfer Failed" connection`,
+          code: "MISSING_TRANSFER_FAILED",
         });
       }
     }
-  }
-}
-
-function validateNoInfiniteLoops(
-  nodes: FlowNode[],
-  edges: FlowEdge[],
-  warnings: ValidationWarning[]
-): void {
-  // Detect cycles using DFS
-  const visited = new Set<string>();
-  const recursionStack = new Set<string>();
-
-  function dfs(nodeId: string, path: string[]): boolean {
-    if (recursionStack.has(nodeId)) {
-      // Found a cycle
-      const cycleStart = path.indexOf(nodeId);
-      const cycle = path.slice(cycleStart);
-      warnings.push({
-        nodeId,
-        message: `Potential infinite loop detected: ${cycle.join(" -> ")} -> ${nodeId}`,
-        code: "POTENTIAL_INFINITE_LOOP",
-      });
-      return true;
-    }
-
-    if (visited.has(nodeId)) return false;
-
-    visited.add(nodeId);
-    recursionStack.add(nodeId);
-
-    const outgoingEdges = edges.filter((e) => e.source === nodeId);
-    for (const edge of outgoingEdges) {
-      dfs(edge.target, [...path, nodeId]);
-    }
-
-    recursionStack.delete(nodeId);
-    return false;
-  }
-
-  const startNode = nodes.find((n) => n.type === "start");
-  if (startNode) {
-    dfs(startNode.id, []);
   }
 }
 
@@ -226,55 +179,60 @@ export function validateNode(
   const config = node.data.config;
 
   switch (node.type) {
-    case "ai_agent":
-      validateAIAgentNode(node, config as AIAgentConfig, errors);
+    case "start":
+      validateStartConfig(node, config as StartConfig, errors);
       break;
-    case "condition":
-      validateConditionNode(node, config as ConditionConfig, variables, errors);
-      break;
-    case "set_variable":
-      validateSetVariableNode(node, config as SetVariableConfig, variables, errors);
-      break;
-    case "api_call":
-      validateAPICallNode(node, config as APICallConfig, errors);
-      break;
-    case "transfer":
-      validateTransferNode(node, config as TransferConfig, errors);
-      break;
-    case "knowledge_base":
-      validateKnowledgeBaseNode(node, config as KnowledgeBaseConfig, errors);
+    case "conversation":
+      validateConversationConfig(node, config as ConversationConfig, errors);
       break;
     case "function":
-      validateFunctionNode(node, config as FunctionConfig, errors);
+      validateFunctionConfig(node, config as FunctionConfig, errors);
+      break;
+    case "call_transfer":
+      validateCallTransferConfig(node, config as CallTransferConfig, errors);
+      break;
+    case "set_variable":
+      validateSetVariableConfig(node, config as SetVariableConfig, variables, errors);
+      break;
+    case "end":
+      validateEndConfig(node, config as EndConfig, errors);
       break;
   }
 
   return errors;
 }
 
-function validateAIAgentNode(
+function validateStartConfig(
   node: FlowNode,
-  config: AIAgentConfig,
+  config: StartConfig,
   errors: ValidationError[]
 ): void {
-  if (!config.systemPrompt || config.systemPrompt.trim() === "") {
-    errors.push({
-      nodeId: node.id,
-      field: "systemPrompt",
-      message: "AI Agent requires a prompt",
-      code: "MISSING_PROMPT",
-    });
-  }
-
-  if (config.mode === "structured") {
-    if (!config.responses || config.responses.length === 0) {
+  if (config.speaksFirst && config.greeting) {
+    if (!config.greeting.content || config.greeting.content.trim() === "") {
       errors.push({
         nodeId: node.id,
-        field: "responses",
-        message: "Structured mode requires at least one response",
-        code: "MISSING_RESPONSES",
+        field: "greeting.content",
+        message: "Greeting message is empty",
+        code: "EMPTY_GREETING",
       });
     }
+  }
+}
+
+function validateConversationConfig(
+  node: FlowNode,
+  config: ConversationConfig,
+  errors: ValidationError[]
+): void {
+  if (!config.content?.content || config.content.content.trim() === "") {
+    errors.push({
+      nodeId: node.id,
+      field: "content",
+      message: config.content?.mode === "static"
+        ? "Static sentence is empty"
+        : "Prompt is empty",
+      code: "EMPTY_CONTENT",
+    });
   }
 
   if (config.temperature !== undefined) {
@@ -287,55 +245,106 @@ function validateAIAgentNode(
       });
     }
   }
+
+  // Validate transitions
+  for (const transition of config.transitions ?? []) {
+    if (!transition.condition || transition.condition.trim() === "") {
+      errors.push({
+        nodeId: node.id,
+        field: "transitions",
+        message: `Transition "${transition.label || "unnamed"}" has no condition`,
+        code: "EMPTY_TRANSITION_CONDITION",
+      });
+    }
+  }
 }
 
-function validateConditionNode(
+function validateFunctionConfig(
   node: FlowNode,
-  config: ConditionConfig,
-  variables: FlowVariable[],
+  config: FunctionConfig,
   errors: ValidationError[]
 ): void {
-  if (!config.rules || config.rules.length === 0) {
-    errors.push({
-      nodeId: node.id,
-      field: "rules",
-      message: "Condition requires at least one rule",
-      code: "MISSING_RULES",
-    });
-    return;
+  if (config.executionType === "http") {
+    if (!config.url || config.url.trim() === "") {
+      errors.push({
+        nodeId: node.id,
+        field: "url",
+        message: "HTTP request requires a URL",
+        code: "MISSING_URL",
+      });
+    } else {
+      const urlWithoutTemplates = config.url.replace(/\{\{[^}]+\}\}/g, "placeholder");
+      try {
+        new URL(urlWithoutTemplates);
+      } catch {
+        errors.push({
+          nodeId: node.id,
+          field: "url",
+          message: "Invalid URL format",
+          code: "INVALID_URL",
+        });
+      }
+    }
+  } else if (config.executionType === "code") {
+    if (!config.code || config.code.trim() === "") {
+      errors.push({
+        nodeId: node.id,
+        field: "code",
+        message: "Custom code is empty",
+        code: "MISSING_CODE",
+      });
+    } else {
+      try {
+        new Function("args", config.code);
+      } catch (e) {
+        errors.push({
+          nodeId: node.id,
+          field: "code",
+          message: `JavaScript syntax error: ${e instanceof Error ? e.message : "Unknown error"}`,
+          code: "SYNTAX_ERROR",
+        });
+      }
+    }
   }
 
-  const variableNames = new Set(variables.map((v) => v.name));
+  if (config.timeout !== undefined && (config.timeout < 1000 || config.timeout > 30000)) {
+    errors.push({
+      nodeId: node.id,
+      field: "timeout",
+      message: "Timeout must be between 1000ms and 30000ms",
+      code: "INVALID_TIMEOUT",
+    });
+  }
 
-  for (const rule of config.rules) {
-    if (!rule.variable) {
+  // Validate transitions
+  for (const transition of config.transitions ?? []) {
+    if (!transition.condition || transition.condition.trim() === "") {
       errors.push({
         nodeId: node.id,
-        field: "rules",
-        message: "Condition rule is missing a variable",
-        code: "MISSING_RULE_VARIABLE",
-      });
-    } else if (!variableNames.has(rule.variable) && !rule.variable.startsWith("{{")) {
-      errors.push({
-        nodeId: node.id,
-        field: "rules",
-        message: `Variable "${rule.variable}" is not defined`,
-        code: "UNDEFINED_VARIABLE",
-      });
-    }
-
-    if (!rule.outputHandle) {
-      errors.push({
-        nodeId: node.id,
-        field: "rules",
-        message: "Condition rule is missing an output handle",
-        code: "MISSING_OUTPUT_HANDLE",
+        field: "transitions",
+        message: `Transition "${transition.label || "unnamed"}" has no condition`,
+        code: "EMPTY_TRANSITION_CONDITION",
       });
     }
   }
 }
 
-function validateSetVariableNode(
+function validateCallTransferConfig(
+  node: FlowNode,
+  config: CallTransferConfig,
+  errors: ValidationError[]
+): void {
+  if (!config.destination || config.destination.trim() === "") {
+    errors.push({
+      nodeId: node.id,
+      field: "destination",
+      message: "Call Transfer requires a destination number",
+      code: "MISSING_DESTINATION",
+    });
+  }
+}
+
+function validateSetVariableConfig(
   node: FlowNode,
   config: SetVariableConfig,
   variables: FlowVariable[],
@@ -365,160 +374,19 @@ function validateSetVariableNode(
       errors.push({
         nodeId: node.id,
         field: "assignments",
-        message: `Variable "${assignment.variable}" is not defined. Add it to flow variables first.`,
+        message: `Variable "${assignment.variable}" is not defined`,
         code: "UNDEFINED_VARIABLE",
       });
     }
   }
 }
 
-function validateAPICallNode(
-  node: FlowNode,
-  config: APICallConfig,
-  errors: ValidationError[]
+function validateEndConfig(
+  _node: FlowNode,
+  _config: EndConfig,
+  _errors: ValidationError[]
 ): void {
-  if (!config.url || config.url.trim() === "") {
-    errors.push({
-      nodeId: node.id,
-      field: "url",
-      message: "API Call requires a URL",
-      code: "MISSING_URL",
-    });
-  } else {
-    // Validate URL format (allow templates)
-    const urlWithoutTemplates = config.url.replace(/\{\{[^}]+\}\}/g, "placeholder");
-    try {
-      new URL(urlWithoutTemplates);
-    } catch {
-      errors.push({
-        nodeId: node.id,
-        field: "url",
-        message: "Invalid URL format",
-        code: "INVALID_URL",
-      });
-    }
-  }
-
-  if (["POST", "PUT", "PATCH"].includes(config.method)) {
-    if (config.body) {
-      try {
-        // Try parsing as JSON (ignoring templates)
-        const bodyWithoutTemplates = config.body.replace(/\{\{[^}]+\}\}/g, '"placeholder"');
-        JSON.parse(bodyWithoutTemplates);
-      } catch {
-        // Body might be intentionally non-JSON, just warn
-      }
-    }
-  }
-}
-
-function validateTransferNode(
-  node: FlowNode,
-  config: TransferConfig,
-  errors: ValidationError[]
-): void {
-  if (!config.destination || config.destination.trim() === "") {
-    errors.push({
-      nodeId: node.id,
-      field: "destination",
-      message: "Transfer requires a destination",
-      code: "MISSING_DESTINATION",
-    });
-  }
-
-  if (config.type === "phone" && config.destination) {
-    // Basic phone validation
-    const phoneRegex = /^[+]?[\d\s()-]{10,}$/;
-    if (!phoneRegex.test(config.destination.replace(/\{\{[^}]+\}\}/g, "1234567890"))) {
-      errors.push({
-        nodeId: node.id,
-        field: "destination",
-        message: "Invalid phone number format",
-        code: "INVALID_PHONE",
-      });
-    }
-  }
-}
-
-function validateKnowledgeBaseNode(
-  node: FlowNode,
-  config: KnowledgeBaseConfig,
-  errors: ValidationError[]
-): void {
-  if (!config.datasetId || config.datasetId.trim() === "") {
-    errors.push({
-      nodeId: node.id,
-      field: "datasetId",
-      message: "Knowledge Base requires a dataset",
-      code: "MISSING_DATASET",
-    });
-  }
-
-  if (!config.query || config.query.trim() === "") {
-    errors.push({
-      nodeId: node.id,
-      field: "query",
-      message: "Knowledge Base requires a query",
-      code: "MISSING_QUERY",
-    });
-  }
-
-  if (config.topK < 1 || config.topK > 10) {
-    errors.push({
-      nodeId: node.id,
-      field: "topK",
-      message: "Top K must be between 1 and 10",
-      code: "INVALID_TOP_K",
-    });
-  }
-
-  if (config.minScore < 0 || config.minScore > 1) {
-    errors.push({
-      nodeId: node.id,
-      field: "minScore",
-      message: "Minimum score must be between 0 and 1",
-      code: "INVALID_MIN_SCORE",
-    });
-  }
-}
-
-function validateFunctionNode(
-  node: FlowNode,
-  config: FunctionConfig,
-  errors: ValidationError[]
-): void {
-  if (!config.code || config.code.trim() === "") {
-    errors.push({
-      nodeId: node.id,
-      field: "code",
-      message: "Function requires code",
-      code: "MISSING_CODE",
-    });
-  }
-
-  // Basic syntax check
-  if (config.code) {
-    try {
-      // Try to parse as function body
-      new Function("inputs", config.code);
-    } catch (e) {
-      errors.push({
-        nodeId: node.id,
-        field: "code",
-        message: `JavaScript syntax error: ${e instanceof Error ? e.message : "Unknown error"}`,
-        code: "SYNTAX_ERROR",
-      });
-    }
-  }
-
-  if (config.timeout < 100 || config.timeout > 30000) {
-    errors.push({
-      nodeId: node.id,
-      field: "timeout",
-      message: "Timeout must be between 100ms and 30 seconds",
-      code: "INVALID_TIMEOUT",
-    });
-  }
+  // End node has no required fields - farewell and reason are optional
 }
 
 // ============================================
@@ -532,7 +400,6 @@ function validateVariables(
 ): void {
   const usedVariables = new Set<string>();
 
-  // Collect all variable references from nodes
   for (const node of nodes) {
     const configStr = JSON.stringify(node.data.config);
     const matches = configStr.match(/\{\{(\w+)\}\}/g);
@@ -544,7 +411,6 @@ function validateVariables(
     }
   }
 
-  // Check for unused variables
   for (const variable of variables) {
     if (!usedVariables.has(variable.name)) {
       warnings.push({
@@ -554,7 +420,6 @@ function validateVariables(
     }
   }
 
-  // Check for duplicate variable names
   const names = variables.map((v) => v.name);
   const duplicates = names.filter((name, index) => names.indexOf(name) !== index);
   new Set(duplicates).forEach((dup) => {

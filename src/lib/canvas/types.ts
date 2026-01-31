@@ -28,7 +28,7 @@ export type NodeType =
 // Variable Types
 // ============================================
 
-export type VariableType = "string" | "number" | "boolean" | "enum";
+export type VariableType = "string" | "number" | "boolean" | "enum" | "array" | "object";
 
 export interface FlowVariable {
   id: string;

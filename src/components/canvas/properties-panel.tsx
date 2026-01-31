@@ -1,12 +1,3 @@
-/**
- * Properties Panel
- *
- * Right sidebar for configuring the selected node.
- * Renders the appropriate form based on node type.
- *
- * @module components/canvas/properties-panel
- */
-
 "use client";
 
 import { useCallback } from "react";
@@ -15,19 +6,17 @@ import { useCanvasStore, useSelectedNode, useVariables } from "@/stores/canvas.s
 import { NODE_METADATA } from "@/lib/canvas/node-configs";
 import type {
   NodeType,
-  AIAgentConfig,
-  ConditionConfig,
-  APICallConfig,
-  SetVariableConfig,
+  NodeConfig,
   StartConfig,
-  TransferConfig,
-  EndCallConfig,
-  KnowledgeBaseConfig,
+  ConversationConfig,
   FunctionConfig,
+  CallTransferConfig,
+  SetVariableConfig,
+  EndConfig,
+  ContentConfig,
 } from "@/lib/canvas/types";
-import { AIAgentForm } from "./forms/ai-agent-form";
-import { ConditionForm } from "./forms/condition-form";
-import { APICallForm } from "./forms/api-call-form";
+import { ConversationForm } from "./forms/conversation-form";
+import { FunctionForm } from "./forms/function-form";
 import { SetVariableForm } from "./forms/set-variable-form";
 import { cn } from "@/lib/utils";
 
@@ -38,9 +27,9 @@ export function PropertiesPanel() {
   const selectNode = useCanvasStore((s) => s.selectNode);
 
   const handleConfigChange = useCallback(
-    (config: unknown) => {
+    (config: NodeConfig) => {
       if (!selectedNode) return;
-      updateNode(selectedNode.id, { config: config as AIAgentConfig });
+      updateNode(selectedNode.id, { config });
     },
     [selectedNode, updateNode]
   );
@@ -95,14 +84,22 @@ export function PropertiesPanel() {
         {nodeType === "start" && (
           <StartForm config={config as StartConfig} onChange={handleConfigChange} />
         )}
-        {nodeType === "ai_agent" && (
-          <AIAgentForm config={config as AIAgentConfig} onChange={handleConfigChange} />
-        )}
-        {nodeType === "condition" && (
-          <ConditionForm
-            config={config as ConditionConfig}
+        {nodeType === "conversation" && (
+          <ConversationForm
+            config={config as ConversationConfig}
             onChange={handleConfigChange}
-            variables={variables}
+          />
+        )}
+        {nodeType === "function" && (
+          <FunctionForm
+            config={config as FunctionConfig}
+            onChange={handleConfigChange}
+          />
+        )}
+        {nodeType === "call_transfer" && (
+          <CallTransferForm
+            config={config as CallTransferConfig}
+            onChange={handleConfigChange}
           />
         )}
         {nodeType === "set_variable" && (
@@ -112,20 +109,8 @@ export function PropertiesPanel() {
             variables={variables}
           />
         )}
-        {nodeType === "api_call" && (
-          <APICallForm config={config as APICallConfig} onChange={handleConfigChange} />
-        )}
-        {nodeType === "transfer" && (
-          <TransferForm config={config as TransferConfig} onChange={handleConfigChange} />
-        )}
-        {nodeType === "end_call" && (
-          <EndCallForm config={config as EndCallConfig} onChange={handleConfigChange} />
-        )}
-        {nodeType === "knowledge_base" && (
-          <KnowledgeBaseForm config={config as KnowledgeBaseConfig} onChange={handleConfigChange} />
-        )}
-        {nodeType === "function" && (
-          <FunctionForm config={config as FunctionConfig} onChange={handleConfigChange} />
+        {nodeType === "end" && (
+          <EndForm config={config as EndConfig} onChange={handleConfigChange} />
         )}
       </div>
 
@@ -135,7 +120,7 @@ export function PropertiesPanel() {
           <p className="text-xs font-medium text-destructive mb-1">Errors</p>
           <ul className="text-xs text-destructive/80 space-y-0.5">
             {selectedNode.data.validationErrors.map((err, i) => (
-              <li key={i}>• {err}</li>
+              <li key={i}>&bull; {err}</li>
             ))}
           </ul>
         </div>
@@ -149,88 +134,299 @@ export function PropertiesPanel() {
 // ============================================
 
 function StartForm({ config, onChange }: { config: StartConfig; onChange: (c: StartConfig) => void }) {
+  const greeting = config.greeting ?? { mode: "static", content: "" };
+
+  const updateGreeting = (updates: Partial<ContentConfig>) => {
+    onChange({ ...config, greeting: { ...greeting, ...updates } });
+  };
+
   return (
     <div className="space-y-4">
+      {/* Speaks First */}
       <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Greeting Message</label>
-        <textarea
-          value={config.greeting || ""}
-          onChange={(e) => onChange({ ...config, greeting: e.target.value })}
-          rows={3}
-          placeholder="Hello! How can I help you today?"
-          className="w-full px-3 py-2 text-sm bg-background border border-border rounded-md resize-none outline-none focus:border-primary text-foreground placeholder:text-muted-foreground"
-        />
+        <label className="text-xs font-medium text-foreground mb-1.5 block">
+          Who speaks first?
+        </label>
+        <div className="flex rounded-md overflow-hidden border border-border">
+          <button
+            onClick={() => onChange({ ...config, speaksFirst: true })}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+              config.speaksFirst
+                ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                : "bg-background text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            Agent First
+          </button>
+          <button
+            onClick={() => onChange({ ...config, speaksFirst: false })}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+              !config.speaksFirst
+                ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
+                : "bg-background text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            User First
+          </button>
+        </div>
       </div>
+
+      {/* Greeting (only when agent speaks first) */}
+      {config.speaksFirst && (
+        <>
+          {/* Mode toggle */}
+          <div>
+            <label className="text-xs font-medium text-foreground mb-1.5 block">
+              Greeting Mode
+            </label>
+            <div className="flex rounded-md overflow-hidden border border-border">
+              <button
+                onClick={() => updateGreeting({ mode: "prompt" })}
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+                  greeting.mode === "prompt"
+                    ? "bg-pink-100 text-pink-700 dark:bg-pink-900 dark:text-pink-300"
+                    : "bg-background text-muted-foreground hover:bg-muted/50"
+                }`}
+              >
+                Prompt
+              </button>
+              <button
+                onClick={() => updateGreeting({ mode: "static" })}
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+                  greeting.mode === "static"
+                    ? "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"
+                    : "bg-background text-muted-foreground hover:bg-muted/50"
+                }`}
+              >
+                Static
+              </button>
+            </div>
+          </div>
+
+          {/* Content */}
+          <div>
+            <label className="text-xs font-medium text-foreground mb-1.5 block">
+              {greeting.mode === "prompt" ? "Greeting Prompt" : "Greeting Message"}
+            </label>
+            <textarea
+              value={greeting.content}
+              onChange={(e) => updateGreeting({ content: e.target.value })}
+              rows={3}
+              placeholder={
+                greeting.mode === "prompt"
+                  ? "Generate a warm greeting for the caller..."
+                  : "Hello! How can I help you today?"
+              }
+              className="w-full px-3 py-2 text-sm bg-background border border-border rounded-md resize-none outline-none focus:border-primary text-foreground placeholder:text-muted-foreground"
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-function TransferForm({ config, onChange }: { config: TransferConfig; onChange: (c: TransferConfig) => void }) {
+function CallTransferForm({
+  config,
+  onChange,
+}: {
+  config: CallTransferConfig;
+  onChange: (c: CallTransferConfig) => void;
+}) {
   return (
     <div className="space-y-4">
+      {/* Transfer Type */}
       <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Transfer Type</label>
-        <select
-          value={config.type}
-          onChange={(e) => onChange({ ...config, type: e.target.value as TransferConfig["type"] })}
-          className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground"
-        >
-          <option value="phone">Phone Number</option>
-          <option value="agent">Agent ID</option>
-          <option value="department">Department</option>
-        </select>
+        <label className="text-xs font-medium text-foreground mb-1.5 block">
+          Transfer Type
+        </label>
+        <div className="flex rounded-md overflow-hidden border border-border">
+          <button
+            onClick={() => onChange({ ...config, transferType: "cold" })}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+              config.transferType === "cold"
+                ? "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                : "bg-background text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            Cold Transfer
+          </button>
+          <button
+            onClick={() => onChange({ ...config, transferType: "warm" })}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+              config.transferType === "warm"
+                ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+                : "bg-background text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            Warm Transfer
+          </button>
+        </div>
+        <p className="text-[10px] text-muted-foreground/60 mt-1">
+          {config.transferType === "cold"
+            ? "Immediately connect caller to destination."
+            : "Wait for human to answer, then announce caller."}
+        </p>
       </div>
+
+      {/* Destination */}
       <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Destination</label>
+        <label className="text-xs font-medium text-foreground mb-1.5 block">
+          Destination Number
+        </label>
         <input
           value={config.destination}
           onChange={(e) => onChange({ ...config, destination: e.target.value })}
-          placeholder={config.type === "phone" ? "+1 555 123 4567" : config.type === "department" ? "sales" : "agent_id"}
-          className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground placeholder:text-muted-foreground"
+          placeholder="+1 555 123 4567 or {{variable}}"
+          className="w-full px-3 py-1.5 text-sm font-mono bg-background border border-border rounded-md outline-none focus:border-primary text-foreground placeholder:text-muted-foreground"
         />
       </div>
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Message Before Transfer</label>
-        <textarea
-          value={config.message || ""}
-          onChange={(e) => onChange({ ...config, message: e.target.value })}
-          rows={2}
-          className="w-full px-3 py-2 text-sm bg-background border border-border rounded-md resize-none outline-none focus:border-primary text-foreground placeholder:text-muted-foreground"
-        />
-      </div>
-      <div className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          id="warm-transfer"
-          checked={config.warmTransfer || false}
-          onChange={(e) => onChange({ ...config, warmTransfer: e.target.checked })}
-          className="rounded border-border"
-        />
-        <label htmlFor="warm-transfer" className="text-xs text-foreground">
-          Warm Transfer (announce caller)
-        </label>
-      </div>
+
+      {/* Warm Transfer Options */}
+      {config.transferType === "warm" && (
+        <div className="space-y-3 border-t border-border pt-3">
+          <label className="text-xs font-medium text-foreground block">
+            Warm Transfer Options
+          </label>
+
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.warmOptions?.holdMusic ?? false}
+              onChange={(e) =>
+                onChange({
+                  ...config,
+                  warmOptions: {
+                    ...config.warmOptions,
+                    holdMusic: e.target.checked,
+                  },
+                })
+              }
+              className="rounded border-border"
+            />
+            <span className="text-xs text-foreground">Play hold music</span>
+          </label>
+
+          <div>
+            <label className="text-[10px] text-muted-foreground mb-1 block">
+              Human Detection Timeout (seconds)
+            </label>
+            <input
+              type="number"
+              min={5}
+              max={120}
+              value={config.warmOptions?.humanDetectionTimeout ?? 30}
+              onChange={(e) =>
+                onChange({
+                  ...config,
+                  warmOptions: {
+                    ...config.warmOptions,
+                    humanDetectionTimeout: parseInt(e.target.value),
+                  },
+                })
+              }
+              className="w-full px-2 py-1.5 text-xs bg-background border border-border rounded-md outline-none focus:border-primary text-foreground"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function EndCallForm({ config, onChange }: { config: EndCallConfig; onChange: (c: EndCallConfig) => void }) {
+function EndForm({ config, onChange }: { config: EndConfig; onChange: (c: EndConfig) => void }) {
+  const speak = config.speakDuringExecution;
+  const hasFarewell = !!speak;
+
+  const toggleFarewell = (enabled: boolean) => {
+    onChange({
+      ...config,
+      speakDuringExecution: enabled
+        ? { mode: "static", content: "Thank you for calling. Goodbye!" }
+        : undefined,
+    });
+  };
+
+  const updateSpeak = (updates: Partial<ContentConfig>) => {
+    if (!speak) return;
+    onChange({
+      ...config,
+      speakDuringExecution: { ...speak, ...updates },
+    });
+  };
+
   return (
     <div className="space-y-4">
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Closing Message</label>
-        <textarea
-          value={config.message || ""}
-          onChange={(e) => onChange({ ...config, message: e.target.value })}
-          rows={3}
-          placeholder="Thank you for calling. Goodbye!"
-          className="w-full px-3 py-2 text-sm bg-background border border-border rounded-md resize-none outline-none focus:border-primary text-foreground placeholder:text-muted-foreground"
+      {/* Farewell Toggle */}
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={hasFarewell}
+          onChange={(e) => toggleFarewell(e.target.checked)}
+          className="rounded border-border"
         />
-      </div>
+        <span className="text-xs font-medium text-foreground">
+          Speak farewell message
+        </span>
+      </label>
+
+      {hasFarewell && speak && (
+        <>
+          {/* Mode toggle */}
+          <div>
+            <label className="text-xs font-medium text-foreground mb-1.5 block">
+              Farewell Mode
+            </label>
+            <div className="flex rounded-md overflow-hidden border border-border">
+              <button
+                onClick={() => updateSpeak({ mode: "static" })}
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+                  speak.mode === "static"
+                    ? "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"
+                    : "bg-background text-muted-foreground hover:bg-muted/50"
+                }`}
+              >
+                Static
+              </button>
+              <button
+                onClick={() => updateSpeak({ mode: "prompt" })}
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+                  speak.mode === "prompt"
+                    ? "bg-pink-100 text-pink-700 dark:bg-pink-900 dark:text-pink-300"
+                    : "bg-background text-muted-foreground hover:bg-muted/50"
+                }`}
+              >
+                Prompt
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-foreground mb-1.5 block">
+              {speak.mode === "prompt" ? "Farewell Prompt" : "Farewell Message"}
+            </label>
+            <textarea
+              value={speak.content}
+              onChange={(e) => updateSpeak({ content: e.target.value })}
+              rows={3}
+              placeholder={
+                speak.mode === "static"
+                  ? "Thank you for calling. Goodbye!"
+                  : "Generate a polite farewell based on the conversation..."
+              }
+              className="w-full px-3 py-2 text-sm bg-background border border-border rounded-md resize-none outline-none focus:border-primary text-foreground placeholder:text-muted-foreground"
+            />
+          </div>
+        </>
+      )}
+
+      {/* Reason */}
       <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Reason</label>
+        <label className="text-xs font-medium text-foreground mb-1.5 block">
+          End Reason
+        </label>
         <select
-          value={config.reason || "completed"}
+          value={config.reason ?? "completed"}
           onChange={(e) => onChange({ ...config, reason: e.target.value })}
           className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground"
         >
@@ -238,150 +434,8 @@ function EndCallForm({ config, onChange }: { config: EndCallConfig; onChange: (c
           <option value="no_answer">No Answer</option>
           <option value="voicemail">Voicemail</option>
           <option value="cancelled">Cancelled</option>
+          <option value="error">Error</option>
         </select>
-      </div>
-      <div className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          id="schedule-followup"
-          checked={config.scheduleFollowUp || false}
-          onChange={(e) => onChange({ ...config, scheduleFollowUp: e.target.checked })}
-          className="rounded border-border"
-        />
-        <label htmlFor="schedule-followup" className="text-xs text-foreground">
-          Schedule Follow-up
-        </label>
-      </div>
-    </div>
-  );
-}
-
-function KnowledgeBaseForm({
-  config,
-  onChange,
-}: {
-  config: KnowledgeBaseConfig;
-  onChange: (c: KnowledgeBaseConfig) => void;
-}) {
-  return (
-    <div className="space-y-4">
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Dataset ID</label>
-        <input
-          value={config.datasetId}
-          onChange={(e) => onChange({ ...config, datasetId: e.target.value })}
-          placeholder="dataset_123"
-          className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground placeholder:text-muted-foreground"
-        />
-      </div>
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Search Query</label>
-        <input
-          value={config.query}
-          onChange={(e) => onChange({ ...config, query: e.target.value })}
-          placeholder="{{user_input}}"
-          className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground font-mono placeholder:text-muted-foreground"
-        />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="text-xs font-medium text-foreground mb-1.5 block">Top K</label>
-          <input
-            type="number"
-            min={1}
-            max={20}
-            value={config.topK}
-            onChange={(e) => onChange({ ...config, topK: parseInt(e.target.value) })}
-            className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-medium text-foreground mb-1.5 block">Min Score</label>
-          <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.1}
-            value={config.minScore}
-            onChange={(e) => onChange({ ...config, minScore: parseFloat(e.target.value) })}
-            className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground"
-          />
-        </div>
-      </div>
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Output Variable</label>
-        <input
-          value={config.outputVariable}
-          onChange={(e) => onChange({ ...config, outputVariable: e.target.value })}
-          placeholder="kb_result"
-          className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground font-mono placeholder:text-muted-foreground"
-        />
-      </div>
-    </div>
-  );
-}
-
-function FunctionForm({ config, onChange }: { config: FunctionConfig; onChange: (c: FunctionConfig) => void }) {
-  return (
-    <div className="space-y-4">
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Description</label>
-        <input
-          value={config.description || ""}
-          onChange={(e) => onChange({ ...config, description: e.target.value })}
-          placeholder="What this function does..."
-          className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground placeholder:text-muted-foreground"
-        />
-      </div>
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Code</label>
-        <textarea
-          value={config.code}
-          onChange={(e) => onChange({ ...config, code: e.target.value })}
-          rows={10}
-          className="w-full px-3 py-2 text-xs bg-background border border-border rounded-md resize-none outline-none focus:border-primary text-foreground font-mono"
-          spellCheck={false}
-        />
-      </div>
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">
-          Input Variables (comma-separated)
-        </label>
-        <input
-          value={config.inputVariables.join(", ")}
-          onChange={(e) =>
-            onChange({
-              ...config,
-              inputVariables: e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            })
-          }
-          placeholder="var1, var2"
-          className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground font-mono placeholder:text-muted-foreground"
-        />
-      </div>
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Output Variable</label>
-        <input
-          value={config.outputVariable}
-          onChange={(e) => onChange({ ...config, outputVariable: e.target.value })}
-          placeholder="function_result"
-          className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground font-mono placeholder:text-muted-foreground"
-        />
-      </div>
-      <div>
-        <label className="text-xs font-medium text-foreground mb-1.5 block">Timeout (ms)</label>
-        <input
-          type="number"
-          min={1000}
-          max={30000}
-          step={1000}
-          value={config.timeout}
-          onChange={(e) => onChange({ ...config, timeout: parseInt(e.target.value) })}
-          className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-md outline-none focus:border-primary text-foreground"
-        />
       </div>
     </div>
   );

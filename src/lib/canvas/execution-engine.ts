@@ -4,6 +4,8 @@
  * Executes flow nodes for testing/simulation purposes.
  * Handles variable substitution, node logic, and conversation flow.
  *
+ * Node types: start, conversation, function, call_transfer, set_variable, end
+ *
  * @module lib/canvas/execution-engine
  */
 
@@ -14,15 +16,14 @@ import type {
   ExecutionState,
   ExecutionResult,
   ExecutionMessage,
-  AIAgentConfig,
-  ConditionConfig,
-  SetVariableConfig,
-  APICallConfig,
-  EndCallConfig,
-  KnowledgeBaseConfig,
-  FunctionConfig,
   StartConfig,
-  ConditionOperator,
+  ConversationConfig,
+  FunctionConfig,
+  CallTransferConfig,
+  SetVariableConfig,
+  EndConfig,
+  ContentConfig,
+  TransitionCondition,
 } from "./types";
 
 // ============================================
@@ -134,10 +135,11 @@ export class FlowExecutor {
       };
     }
 
-    // Store user input in variables
+    // Store user input in variables and add message
     if (userInput) {
       this.state.variables["user_input"] = userInput;
       this.addMessage("user", userInput, node.id);
+      this.conversationHistory.push({ role: "user", content: userInput });
     }
 
     try {
@@ -151,6 +153,7 @@ export class FlowExecutor {
       // Add agent output as message
       if (result.output) {
         this.addMessage("agent", result.output, node.id);
+        this.conversationHistory.push({ role: "assistant", content: result.output });
       }
 
       // Advance to next node
@@ -159,13 +162,21 @@ export class FlowExecutor {
         const nextNode = this.nodes.get(result.nextNodeId);
 
         // Check if next node is terminal
-        if (nextNode?.type === "end_call" || nextNode?.type === "transfer") {
-          // Execute terminal node
+        if (nextNode?.type === "end" || nextNode?.type === "call_transfer") {
+          // Execute terminal node immediately
           const terminalResult = await this.executeNode(nextNode);
           if (terminalResult.output) {
             this.addMessage("agent", terminalResult.output, nextNode.id);
+            this.conversationHistory.push({ role: "assistant", content: terminalResult.output });
+          }
+          // Apply any terminal variable updates
+          for (const [key, value] of Object.entries(terminalResult.variableUpdates)) {
+            this.state.variables[key] = value;
           }
           this.state.status = "completed";
+        } else if (nextNode?.type === "set_variable") {
+          // Silent nodes auto-advance: execute immediately and keep going
+          this.state.status = "running";
         } else {
           this.state.status = "waiting_input";
         }
@@ -186,28 +197,22 @@ export class FlowExecutor {
   }
 
   /**
-   * Execute a specific node
+   * Execute a specific node based on its type
    */
   private async executeNode(node: FlowNode, userInput?: string): Promise<ExecutionResult> {
     switch (node.type) {
       case "start":
         return this.executeStart(node);
-      case "ai_agent":
-        return this.executeAIAgent(node, userInput);
-      case "condition":
-        return this.executeCondition(node);
-      case "set_variable":
-        return this.executeSetVariable(node);
-      case "api_call":
-        return this.executeAPICall(node);
-      case "end_call":
-        return this.executeEndCall(node);
-      case "knowledge_base":
-        return this.executeKnowledgeBase(node);
+      case "conversation":
+        return this.executeConversation(node, userInput);
       case "function":
         return this.executeFunction(node);
-      case "transfer":
-        return this.executeTransfer(node);
+      case "call_transfer":
+        return this.executeCallTransfer(node);
+      case "set_variable":
+        return this.executeSetVariable(node);
+      case "end":
+        return this.executeEnd(node);
       default:
         return {
           nextNodeId: this.getNextNodeId(node.id),
@@ -216,358 +221,250 @@ export class FlowExecutor {
     }
   }
 
+  // ============================================
+  // Node Executors
+  // ============================================
+
   /**
    * Execute Start node
+   *
+   * If speaksFirst is true, output the greeting content.
+   * Static mode outputs content directly; prompt mode simulates a response.
+   * Always follows the default output edge.
    */
   private executeStart(node: FlowNode): ExecutionResult {
     const config = node.data.config as StartConfig;
 
-    // Set initial variables
-    const variableUpdates: Record<string, unknown> = {};
-    if (config.initialVariables) {
-      Object.assign(variableUpdates, config.initialVariables);
+    let output: string | undefined;
+
+    if (config.speaksFirst && config.greeting) {
+      output = this.resolveContent(config.greeting);
     }
 
     return {
-      output: this.substituteVariables(config.greeting || "Hello!"),
+      output,
       nextNodeId: this.getNextNodeId(node.id),
-      variableUpdates,
+      variableUpdates: {},
     };
   }
 
   /**
-   * Execute AI Agent node
+   * Execute Conversation node
+   *
+   * The main dialogue node that handles AI conversation.
+   *
+   * Flow:
+   * 1. If no user input yet, output the node's content (prompt or static) and wait.
+   * 2. Once user responds, evaluate transitions:
+   *    - Equation transitions first (top-to-bottom)
+   *    - Prompt transitions second (top-to-bottom)
+   *    - First TRUE transition wins; follow its edge
+   *    - If nothing matches, loop back to this node
+   * 3. If skipResponse is true, advance immediately without waiting for input.
    */
-  private async executeAIAgent(node: FlowNode, userInput?: string): Promise<ExecutionResult> {
-    const config = node.data.config as AIAgentConfig;
+  private async executeConversation(node: FlowNode, userInput?: string): Promise<ExecutionResult> {
+    const config = node.data.config as ConversationConfig;
 
-    // Live mode - use real OpenAI
-    if (this.mode === "live") {
-      return this.executeAIAgentLive(node, config, userInput);
+    // If skipResponse is set, advance immediately without waiting for user input
+    if (config.skipResponse) {
+      const output = this.resolveContent(config.content);
+      const nextNodeId = this.evaluateTransitions(node.id, config.transitions, userInput);
+      return {
+        output,
+        nextNodeId: nextNodeId || this.getNextNodeId(node.id) || node.id,
+        variableUpdates: {},
+      };
     }
 
-    // Simulation mode - use pattern matching for intents
-    const intents = config.intents || [];
-    const input = (userInput || "").toLowerCase();
+    // No user input yet: output the node's content and wait for input
+    if (!userInput) {
+      let output: string;
 
-    // Try to match intent based on examples
-    let matchedIntent: typeof intents[0] | null = null;
-    if (intents.length > 0 && userInput) {
-      for (const intent of intents) {
-        // Check if user input contains any of the intent's example phrases
-        const examples = intent.examples || [];
-        for (const example of examples) {
-          if (input.includes(example.toLowerCase())) {
-            matchedIntent = intent;
-            break;
+      if (config.content.mode === "static") {
+        output = this.substituteVariables(config.content.content);
+      } else {
+        // Prompt mode
+        if (this.mode === "live") {
+          output = await this.callChatAPI(config.content.content, config);
+        } else {
+          output = this.simulatePromptResponse(config.content.content);
+        }
+      }
+
+      return {
+        output,
+        nextNodeId: node.id, // Stay on this node, waiting for user input
+        variableUpdates: {},
+      };
+    }
+
+    // User has responded: evaluate transitions to determine where to go next
+    const nextNodeId = await this.evaluateTransitionsAsync(node.id, config.transitions, userInput);
+
+    if (nextNodeId) {
+      // A transition matched; follow that edge
+      return {
+        nextNodeId,
+        variableUpdates: {},
+      };
+    }
+
+    // No transition matched: loop back to this node and generate a contextual response
+    let output: string;
+
+    if (this.mode === "live") {
+      output = await this.callChatAPI(config.content.content, config, userInput);
+    } else {
+      output = this.simulateConversationResponse(config, userInput);
+    }
+
+    return {
+      output,
+      nextNodeId: node.id, // Stay on current node
+      variableUpdates: {},
+    };
+  }
+
+  /**
+   * Execute Function node
+   *
+   * HTTP mode: simulate response in test, could make actual request in live.
+   * Code mode: execute sandboxed JavaScript.
+   * If speakDuringExecution is set, output that speech first.
+   * After execution, evaluate transitions.
+   */
+  private async executeFunction(node: FlowNode): Promise<ExecutionResult> {
+    const config = node.data.config as FunctionConfig;
+
+    // Output speech during execution if configured
+    let output: string | undefined;
+    if (config.speakDuringExecution) {
+      output = this.resolveContent(config.speakDuringExecution);
+    }
+
+    const variableUpdates: Record<string, unknown> = {};
+
+    if (config.executionType === "http") {
+      // HTTP execution
+      if (this.mode === "live" && config.url) {
+        try {
+          const url = this.substituteVariables(config.url);
+          const headers: Record<string, string> = {};
+          if (config.headers) {
+            for (const [key, value] of Object.entries(config.headers)) {
+              headers[key] = this.substituteVariables(value);
+            }
+          }
+
+          const fetchOptions: RequestInit = {
+            method: config.method || "GET",
+            headers,
+          };
+
+          if (config.body && config.method !== "GET") {
+            fetchOptions.body = this.substituteVariables(config.body);
+          }
+
+          const response = await fetch(url, fetchOptions);
+          const data = await response.json();
+
+          // Apply response mappings
+          if (config.responseMapping) {
+            for (const mapping of config.responseMapping) {
+              const value = this.extractJsonPath(data, mapping.path);
+              variableUpdates[mapping.variable] = value;
+            }
+          }
+
+          variableUpdates["_function_status"] = response.ok ? "success" : "error";
+          variableUpdates["_function_status_code"] = response.status;
+        } catch (error) {
+          variableUpdates["_function_status"] = "error";
+          variableUpdates["_function_error"] = error instanceof Error ? error.message : "HTTP request failed";
+        }
+      } else {
+        // Simulation mode: simulate an HTTP response
+        const simulatedData = {
+          success: true,
+          data: {
+            result: "simulated_value",
+            items: ["item_1", "item_2", "item_3"],
+            count: 3,
+          },
+        };
+
+        if (config.responseMapping) {
+          for (const mapping of config.responseMapping) {
+            const value = this.extractJsonPath(simulatedData, mapping.path);
+            variableUpdates[mapping.variable] = value;
           }
         }
-        if (matchedIntent) break;
 
-        // Also check if input contains the intent name or description keywords
-        if (input.includes(intent.name.toLowerCase())) {
-          matchedIntent = intent;
-          break;
+        variableUpdates["_function_status"] = "success";
+      }
+    } else if (config.executionType === "code") {
+      // Code execution (sandboxed)
+      try {
+        const inputs: Record<string, unknown> = {};
+        if (config.inputVariables) {
+          for (const varName of config.inputVariables) {
+            inputs[varName] = this.state.variables[varName];
+          }
         }
+
+        // Execute in sandbox (simplified - in production use vm2 or similar)
+        const fn = new Function("inputs", config.code || "return null;");
+        const result = fn(inputs);
+
+        if (config.outputVariable) {
+          variableUpdates[config.outputVariable] = result;
+        }
+        variableUpdates["_function_status"] = "success";
+      } catch (error) {
+        if (config.outputVariable) {
+          variableUpdates[config.outputVariable] = null;
+        }
+        variableUpdates["_function_status"] = "error";
+        variableUpdates["_function_error"] = error instanceof Error ? error.message : "Code execution failed";
       }
     }
 
-    // If intent matched, route to that intent's output handle
-    if (matchedIntent) {
-      const response = `I understand you want ${matchedIntent.name}. Let me help you with that.`;
-      const nextNodeId = this.getNextNodeIdForHandle(node.id, matchedIntent.outputHandle);
+    // Evaluate transitions after execution
+    const nextNodeId = this.evaluateTransitions(node.id, config.transitions);
 
-      return {
-        output: this.substituteVariables(response),
-        nextNodeId: nextNodeId || this.getNextNodeId(node.id),
-        variableUpdates: {
-          _detected_intent: matchedIntent.name,
-          _intent_confidence: 0.8,
-        },
-      };
-    }
-
-    // No intent matched - stay on this node for multi-turn conversation
-    // Generate a contextual response asking for more information
-    const simulatedResponse = this.simulateFreeformResponse(config, userInput);
-
-    // AI Agents support multi-turn conversation by default
-    // Stay on current node and keep the conversation going
-    // Only advance to next node if user explicitly triggers an action
-
-    // Check for exit phrases that should end the conversation
-    const exitPhrases = ["bye", "goodbye", "thanks", "thank you", "that's all", "nothing else", "no thanks"];
-    const shouldExit = exitPhrases.some(phrase => input.includes(phrase));
-
-    if (shouldExit) {
-      // User wants to end - go to next node
-      return {
-        output: "Thank you! Is there anything else I can help you with?",
-        nextNodeId: this.getNextNodeId(node.id),
-        variableUpdates: {},
-      };
-    }
-
-    // Stay on current node for continued conversation
     return {
-      output: this.substituteVariables(simulatedResponse),
-      nextNodeId: node.id, // Loop back to self
-      variableUpdates: {},
+      output,
+      nextNodeId: nextNodeId || this.getNextNodeId(node.id),
+      variableUpdates,
+      error: variableUpdates["_function_error"] as string | undefined,
     };
   }
 
   /**
-   * Execute AI Agent with real OpenAI API
-   * Uses structured output for intent detection and entity extraction
+   * Execute Call Transfer node
+   *
+   * Outputs a transfer message and ends the flow.
    */
-  private async executeAIAgentLive(
-    node: FlowNode,
-    config: AIAgentConfig,
-    userInput?: string
-  ): Promise<ExecutionResult> {
-    // Build system prompt from node config
-    const systemPrompt = config.systemPrompt || config.prompt || "You are a helpful AI voice assistant.";
-    const instructions = config.instructions;
+  private executeCallTransfer(node: FlowNode): ExecutionResult {
+    const config = node.data.config as CallTransferConfig;
+    const destination = this.substituteVariables(config.destination);
 
-    // Get intents and entities from config
-    const intents = config.intents || [];
-    const entities = config.entities || [];
-
-    try {
-      const response = await fetch("/api/canvas/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: userInput || "Hello",
-          systemPrompt,
-          instructions,
-          conversationHistory: this.conversationHistory,
-          variables: this.state.variables,
-          intents,
-          entities,
-          temperature: config.temperature || 0.7,
-          maxTokens: config.maxTokens || 300,
-          model: config.model || "gpt-4o-mini",
-        }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to get AI response");
-      }
-
-      const data = await response.json();
-      const aiResponse = data.response || "I'm sorry, I couldn't generate a response.";
-      const detectedIntent = data.intent || { name: "unknown", confidence: 0 };
-      const extractedEntities = data.extractedEntities || {};
-      const nextAction = data.nextAction || "continue";
-
-      // Update conversation history
-      if (userInput) {
-        this.conversationHistory.push({ role: "user", content: userInput });
-      }
-      this.conversationHistory.push({ role: "assistant", content: aiResponse });
-
-      // Build variable updates from extracted entities
-      const variableUpdates: Record<string, unknown> = {};
-
-      // Map extracted entities to variables
-      for (const entity of entities) {
-        if (extractedEntities[entity.name] !== undefined) {
-          variableUpdates[entity.variableName] = extractedEntities[entity.name];
-        }
-      }
-
-      // Store intent in variables for condition nodes
-      variableUpdates["_detected_intent"] = detectedIntent.name;
-      variableUpdates["_intent_confidence"] = detectedIntent.confidence;
-
-      // Determine next node based on intent
-      let nextNodeId: string | null = null;
-
-      // First, check if intent maps to a specific output handle
-      if (intents.length > 0 && detectedIntent.name !== "unknown") {
-        const matchingIntent = intents.find((i) => i.name === detectedIntent.name);
-        if (matchingIntent?.outputHandle) {
-          nextNodeId = this.getNextNodeIdForHandle(node.id, matchingIntent.outputHandle);
-        }
-      }
-
-      // If no intent-based routing, check for action-based routing
-      if (!nextNodeId) {
-        switch (nextAction) {
-          case "transfer":
-            nextNodeId = this.getNextNodeIdForHandle(node.id, "transfer") || this.getNextNodeId(node.id);
-            break;
-          case "end_call":
-            nextNodeId = this.getNextNodeIdForHandle(node.id, "end") || this.getNextNodeId(node.id);
-            break;
-          case "escalate":
-            nextNodeId = this.getNextNodeIdForHandle(node.id, "escalate") || this.getNextNodeId(node.id);
-            break;
-          default:
-            nextNodeId = this.getNextNodeId(node.id);
-        }
-      }
-
-      return {
-        output: this.substituteVariables(aiResponse),
-        nextNodeId,
-        variableUpdates,
-        action: nextAction,
-      };
-    } catch (error) {
-      console.error("Live AI error:", error);
-      const fallbackResponse = error instanceof Error
-        ? `[AI Error: ${error.message}]`
-        : "I'm having trouble connecting. Please try again.";
-
-      return {
-        output: fallbackResponse,
-        nextNodeId: this.getNextNodeId(node.id),
-        variableUpdates: {},
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  }
-
-  private simulateFreeformResponse(config: AIAgentConfig, userInput?: string): string {
-    const systemPrompt = config.systemPrompt || config.prompt || "";
-    const instructions = config.instructions || "";
-    const input = (userInput || "").toLowerCase();
-
-    if (!userInput) {
-      return "How can I help you today?";
-    }
-
-    // Check for greetings
-    const greetings = ["hi", "hello", "hey", "hy", "good morning", "good afternoon"];
-    if (greetings.some(g => input === g || input.startsWith(g + " "))) {
-      return "Hello! How can I assist you today?";
-    }
-
-    // Check for questions about identity
-    if (input.includes("your name") || input.includes("who are you")) {
-      return "I'm an AI assistant here to help you. What can I do for you today?";
-    }
-
-    // Check for "how are you" type questions
-    if (input.includes("how are you") || input.includes("how's it going")) {
-      return "I'm doing well, thank you for asking! How can I help you today?";
-    }
-
-    // Check context from system prompt/instructions for relevant responses
-    const context = (systemPrompt + " " + instructions).toLowerCase();
-
-    if (context.includes("medical") || context.includes("healthcare") || context.includes("doctor")) {
-      if (input.includes("appointment") || input.includes("schedule") || input.includes("book")) {
-        return "I'd be happy to help you schedule an appointment. Could you tell me your name and what type of appointment you need?";
-      }
-      if (input.includes("sick") || input.includes("pain") || input.includes("symptom")) {
-        return "I'm sorry to hear you're not feeling well. Can you describe your symptoms so I can help direct you to the right care?";
-      }
-    }
-
-    if (context.includes("schedule") || context.includes("appointment") || context.includes("booking")) {
-      return "I'd be happy to help with scheduling. Could you tell me what date and time works best for you?";
-    }
-
-    if (context.includes("collect") && context.includes("name")) {
-      return "Could you please tell me your name?";
-    }
-
-    // Default helpful response
-    return "I understand. Could you tell me more about what you need help with?";
-  }
-
-  /**
-   * Execute Condition node
-   */
-  private executeCondition(node: FlowNode): ExecutionResult {
-    const config = node.data.config as ConditionConfig;
-
-    // Evaluate rules in order
-    for (const rule of config.rules) {
-      const variableValue = this.state.variables[rule.variable];
-      const matches = this.evaluateCondition(variableValue, rule.operator, rule.value);
-
-      if (matches) {
-        const nextNodeId = this.getNextNodeIdForHandle(node.id, rule.outputHandle);
-        return {
-          nextNodeId,
-          variableUpdates: {},
-        };
-      }
-    }
-
-    // No rule matched, use default
-    const defaultNextId = this.getNextNodeIdForHandle(node.id, config.defaultHandle);
     return {
-      nextNodeId: defaultNextId,
-      variableUpdates: {},
+      output: `Transferring you now...`,
+      nextNodeId: null,
+      variableUpdates: {
+        _transfer_destination: destination,
+        _transfer_type: config.transferType,
+      },
+      action: "transfer",
     };
-  }
-
-  private evaluateCondition(value: unknown, operator: ConditionOperator, compareValue: unknown): boolean {
-    switch (operator) {
-      case "equals":
-        return value === compareValue;
-      case "not_equals":
-        return value !== compareValue;
-      case "contains":
-        return String(value).toLowerCase().includes(String(compareValue).toLowerCase());
-      case "not_contains":
-        return !String(value).toLowerCase().includes(String(compareValue).toLowerCase());
-      case "greater_than":
-        return Number(value) > Number(compareValue);
-      case "less_than":
-        return Number(value) < Number(compareValue);
-      case "greater_or_equal":
-        return Number(value) >= Number(compareValue);
-      case "less_or_equal":
-        return Number(value) <= Number(compareValue);
-      case "is_empty":
-        return !value || (Array.isArray(value) && value.length === 0) || value === "";
-      case "is_not_empty":
-        return !!value && !(Array.isArray(value) && value.length === 0) && value !== "";
-      case "matches_regex":
-        try {
-          return new RegExp(String(compareValue)).test(String(value));
-        } catch {
-          return false;
-        }
-      case "sentiment_positive":
-        // Simplified sentiment check
-        return this.analyzeSentiment(String(value)) === "positive";
-      case "sentiment_negative":
-        return this.analyzeSentiment(String(value)) === "negative";
-      case "sentiment_neutral":
-        return this.analyzeSentiment(String(value)) === "neutral";
-      default:
-        return false;
-    }
-  }
-
-  private analyzeSentiment(text: string): "positive" | "negative" | "neutral" {
-    const lower = text.toLowerCase();
-    const positiveWords = ["great", "good", "excellent", "happy", "love", "thank", "yes", "please", "wonderful"];
-    const negativeWords = ["bad", "terrible", "hate", "angry", "frustrated", "no", "never", "worst", "awful"];
-
-    let score = 0;
-    for (const word of positiveWords) {
-      if (lower.includes(word)) score++;
-    }
-    for (const word of negativeWords) {
-      if (lower.includes(word)) score--;
-    }
-
-    if (score > 0) return "positive";
-    if (score < 0) return "negative";
-    return "neutral";
   }
 
   /**
    * Execute Set Variable node
+   *
+   * Applies variable assignments silently, then follows the default output edge.
+   * Produces no output.
    */
   private executeSetVariable(node: FlowNode): ExecutionResult {
     const config = node.data.config as SetVariableConfig;
@@ -600,139 +497,417 @@ export class FlowExecutor {
   }
 
   /**
-   * Execute API Call node (simulated for testing)
+   * Execute End node
+   *
+   * Outputs an optional farewell message and ends the flow.
    */
-  private async executeAPICall(node: FlowNode): Promise<ExecutionResult> {
-    const config = node.data.config as APICallConfig;
+  private executeEnd(node: FlowNode): ExecutionResult {
+    const config = node.data.config as EndConfig;
 
-    // In test mode, simulate API response
-    // In production, this would make actual HTTP requests
-    const simulatedResponse = {
-      success: true,
-      data: {
-        slots: ["9:00 AM", "2:00 PM", "4:30 PM"],
-        technician: "John Smith",
-      },
+    let output: string | undefined;
+    if (config.speakDuringExecution) {
+      output = this.resolveContent(config.speakDuringExecution);
+    }
+
+    return {
+      output,
+      nextNodeId: null,
+      variableUpdates: {},
     };
+  }
 
-    const variableUpdates: Record<string, unknown> = {};
-    for (const mapping of config.responseMapping) {
-      // Simple JSONPath simulation
-      const path = mapping.path.replace("$.", "");
-      const parts = path.split(".");
-      let value: unknown = simulatedResponse.data;
-      for (const part of parts) {
-        if (value && typeof value === "object") {
-          value = (value as Record<string, unknown>)[part];
-        }
+  // ============================================
+  // Content Resolution
+  // ============================================
+
+  /**
+   * Resolve a ContentConfig to a string.
+   * Static mode: substitute variables and return directly.
+   * Prompt mode: simulate a response based on the prompt.
+   */
+  private resolveContent(content: ContentConfig): string {
+    if (content.mode === "static") {
+      return this.substituteVariables(content.content);
+    }
+
+    // Prompt mode: simulate a response
+    return this.simulatePromptResponse(content.content);
+  }
+
+  /**
+   * Simulate a response for prompt-mode content.
+   * In simulation mode, generates a plausible response based on the prompt text.
+   */
+  private simulatePromptResponse(prompt: string): string {
+    const lower = prompt.toLowerCase();
+
+    // Try to generate a contextual response based on the prompt content
+    if (lower.includes("greet") || lower.includes("welcome") || lower.includes("hello")) {
+      return "Hello! How can I help you today?";
+    }
+
+    if (lower.includes("name") && (lower.includes("ask") || lower.includes("collect") || lower.includes("get"))) {
+      return "Could you please tell me your name?";
+    }
+
+    if (lower.includes("appointment") || lower.includes("schedule") || lower.includes("book")) {
+      return "I'd be happy to help you schedule an appointment. What date and time work best for you?";
+    }
+
+    if (lower.includes("confirm") || lower.includes("verify")) {
+      return "Let me confirm those details for you. Is everything correct?";
+    }
+
+    if (lower.includes("thank") || lower.includes("goodbye") || lower.includes("farewell")) {
+      return "Thank you for your time! Have a great day.";
+    }
+
+    if (lower.includes("help") || lower.includes("assist")) {
+      return "I'm here to help. What can I do for you?";
+    }
+
+    // Default: generate a generic response from the prompt
+    return "I understand. How can I assist you further?";
+  }
+
+  // ============================================
+  // Transition Evaluation
+  // ============================================
+
+  /**
+   * Evaluate transitions synchronously (for non-prompt or simulation mode).
+   *
+   * Equation transitions are evaluated FIRST, top-to-bottom.
+   * Prompt transitions are evaluated AFTER, top-to-bottom.
+   * First TRUE transition wins.
+   * Returns the next node ID, or null if no transition matched.
+   */
+  private evaluateTransitions(
+    nodeId: string,
+    transitions: TransitionCondition[],
+    userInput?: string
+  ): string | null {
+    // Separate equation and prompt transitions, preserving order within each group
+    const equationTransitions = transitions.filter((t) => t.type === "equation");
+    const promptTransitions = transitions.filter((t) => t.type === "prompt");
+
+    // Evaluate equation transitions first
+    for (const transition of equationTransitions) {
+      if (this.evaluateEquationCondition(transition.condition)) {
+        const nextNodeId = this.getNextNodeIdForHandle(nodeId, transition.handle);
+        if (nextNodeId) return nextNodeId;
       }
-      variableUpdates[mapping.variable] = value;
     }
 
-    // Randomly succeed or fail for testing
-    const success = Math.random() > 0.2; // 80% success rate
-    const handle = success ? "success" : (config.errorHandle || "error");
+    // Evaluate prompt transitions (simulation mode: keyword matching)
+    for (const transition of promptTransitions) {
+      if (this.evaluatePromptConditionSimulated(transition.condition, userInput)) {
+        const nextNodeId = this.getNextNodeIdForHandle(nodeId, transition.handle);
+        if (nextNodeId) return nextNodeId;
+      }
+    }
 
-    return {
-      nextNodeId: this.getNextNodeIdForHandle(node.id, handle),
-      variableUpdates: success ? variableUpdates : {},
-    };
+    return null;
   }
 
   /**
-   * Execute End Call node
+   * Evaluate transitions asynchronously (supports live mode AI-based prompt evaluation).
    */
-  private executeEndCall(node: FlowNode): ExecutionResult {
-    const config = node.data.config as EndCallConfig;
+  private async evaluateTransitionsAsync(
+    nodeId: string,
+    transitions: TransitionCondition[],
+    userInput?: string
+  ): Promise<string | null> {
+    // Separate equation and prompt transitions, preserving order within each group
+    const equationTransitions = transitions.filter((t) => t.type === "equation");
+    const promptTransitions = transitions.filter((t) => t.type === "prompt");
 
-    return {
-      output: this.substituteVariables(config.message || "Goodbye!"),
-      nextNodeId: null,
-      variableUpdates: {},
-    };
+    // Evaluate equation transitions first (synchronous)
+    for (const transition of equationTransitions) {
+      if (this.evaluateEquationCondition(transition.condition)) {
+        const nextNodeId = this.getNextNodeIdForHandle(nodeId, transition.handle);
+        if (nextNodeId) return nextNodeId;
+      }
+    }
+
+    // Evaluate prompt transitions
+    for (const transition of promptTransitions) {
+      let matched = false;
+
+      if (this.mode === "live" && userInput) {
+        matched = await this.evaluatePromptConditionLive(transition.condition, userInput);
+      } else {
+        matched = this.evaluatePromptConditionSimulated(transition.condition, userInput);
+      }
+
+      if (matched) {
+        const nextNodeId = this.getNextNodeIdForHandle(nodeId, transition.handle);
+        if (nextNodeId) return nextNodeId;
+      }
+    }
+
+    return null;
   }
 
   /**
-   * Execute Transfer node
+   * Evaluate an equation transition condition.
+   *
+   * Parses conditions in the format: "{{variable}} operator value"
+   * Supported operators: exists, not_exists, equals, not_equals,
+   *   contains, not_contains, greater_than, less_than, greater_or_equal, less_or_equal
    */
-  private executeTransfer(node: FlowNode): ExecutionResult {
-    const config = node.data.config as { message?: string };
+  private evaluateEquationCondition(condition: string): boolean {
+    const substituted = this.substituteVariables(condition);
 
-    return {
-      output: this.substituteVariables(config.message || "Transferring you now..."),
-      nextNodeId: null,
-      variableUpdates: {},
-      action: "transfer",
-    };
+    // Pattern: "{{variable}} operator value" or just "{{variable}} exists"
+    // After substitution, variable refs are replaced with their values.
+    // We need to parse the ORIGINAL condition to extract variable name and operator.
+
+    // Try to parse: {{varName}} operator [value]
+    const matchFull = condition.match(
+      /^\{\{(\w+(?:\.\w+)*)\}\}\s+(equals|not_equals|contains|not_contains|greater_than|less_than|greater_or_equal|less_or_equal)\s+(.+)$/
+    );
+    if (matchFull) {
+      const [, varPath, operator, compareValueRaw] = matchFull;
+      const variableValue = this.resolveVariablePath(varPath);
+      const compareValue = this.substituteVariables(compareValueRaw.trim());
+      return this.evaluateOperator(variableValue, operator, compareValue);
+    }
+
+    // Try to parse: {{varName}} exists / not_exists
+    const matchExistence = condition.match(
+      /^\{\{(\w+(?:\.\w+)*)\}\}\s+(exists|not_exists)$/
+    );
+    if (matchExistence) {
+      const [, varPath, operator] = matchExistence;
+      const variableValue = this.resolveVariablePath(varPath);
+
+      if (operator === "exists") {
+        return variableValue !== undefined && variableValue !== null && variableValue !== "";
+      }
+      return variableValue === undefined || variableValue === null || variableValue === "";
+    }
+
+    // Fallback: try evaluating the fully substituted string as a simple truthy check
+    if (substituted === "true") return true;
+    if (substituted === "false") return false;
+
+    return false;
   }
 
   /**
-   * Execute Knowledge Base node (simulated)
+   * Evaluate a comparison operator between two values.
    */
-  private executeKnowledgeBase(node: FlowNode): ExecutionResult {
-    const config = node.data.config as KnowledgeBaseConfig;
-
-    // Simulate knowledge base search
-    const query = this.substituteVariables(config.query);
-
-    // Randomly return results or not
-    const hasResults = Math.random() > 0.3; // 70% chance of results
-
-    if (hasResults) {
-      const variableUpdates: Record<string, unknown> = {
-        [config.outputVariable]: [
-          { content: `Here's what I found about "${query}"...`, score: 0.85 },
-          { content: "Additional relevant information...", score: 0.72 },
-        ],
-      };
-      return {
-        nextNodeId: this.getNextNodeIdForHandle(node.id, "found"),
-        variableUpdates,
-      };
-    } else {
-      return {
-        nextNodeId: this.getNextNodeIdForHandle(node.id, config.noResultsHandle || "no_results"),
-        variableUpdates: { [config.outputVariable]: [] },
-      };
+  private evaluateOperator(value: unknown, operator: string, compareValue: string): boolean {
+    switch (operator) {
+      case "equals":
+        return String(value) === compareValue;
+      case "not_equals":
+        return String(value) !== compareValue;
+      case "contains":
+        return String(value).toLowerCase().includes(compareValue.toLowerCase());
+      case "not_contains":
+        return !String(value).toLowerCase().includes(compareValue.toLowerCase());
+      case "greater_than":
+        return Number(value) > Number(compareValue);
+      case "less_than":
+        return Number(value) < Number(compareValue);
+      case "greater_or_equal":
+        return Number(value) >= Number(compareValue);
+      case "less_or_equal":
+        return Number(value) <= Number(compareValue);
+      default:
+        return false;
     }
   }
 
   /**
-   * Execute Function node (sandboxed)
+   * Resolve a dot-separated variable path from the state variables.
    */
-  private executeFunction(node: FlowNode): ExecutionResult {
-    const config = node.data.config as FunctionConfig;
+  private resolveVariablePath(path: string): unknown {
+    const parts = path.split(".");
+    let value: unknown = this.state.variables;
+    for (const part of parts) {
+      if (value && typeof value === "object") {
+        value = (value as Record<string, unknown>)[part];
+      } else {
+        return undefined;
+      }
+    }
+    return value;
+  }
 
+  /**
+   * Evaluate a prompt transition condition in simulation mode.
+   * Uses keyword matching: checks if the user's input contains keywords
+   * from the condition string.
+   */
+  private evaluatePromptConditionSimulated(condition: string, userInput?: string): boolean {
+    if (!userInput) return false;
+
+    const input = userInput.toLowerCase();
+    const conditionLower = condition.toLowerCase();
+
+    // Extract meaningful keywords from the condition (skip common words)
+    const stopWords = new Set([
+      "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+      "have", "has", "had", "do", "does", "did", "will", "would", "could",
+      "should", "may", "might", "shall", "can", "to", "of", "in", "for",
+      "on", "with", "at", "by", "from", "as", "into", "through", "during",
+      "before", "after", "above", "below", "between", "out", "off", "over",
+      "under", "again", "further", "then", "once", "if", "or", "and", "but",
+      "not", "no", "nor", "so", "too", "very", "just", "about", "up",
+      "that", "this", "these", "those", "it", "its", "user", "wants",
+      "want", "says", "said", "asking", "asked", "ask", "they", "their",
+      "them", "he", "she", "his", "her", "we", "our", "you", "your",
+    ]);
+
+    const keywords = conditionLower
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((word) => word.length > 2 && !stopWords.has(word));
+
+    if (keywords.length === 0) return false;
+
+    // Check if the user input contains any of the condition keywords
+    let matchCount = 0;
+    for (const keyword of keywords) {
+      if (input.includes(keyword)) {
+        matchCount++;
+      }
+    }
+
+    // Require at least one keyword match, and a reasonable ratio for multi-keyword conditions
+    const matchRatio = matchCount / keywords.length;
+    return matchCount > 0 && (keywords.length <= 2 ? matchCount >= 1 : matchRatio >= 0.4);
+  }
+
+  /**
+   * Evaluate a prompt transition condition in live mode.
+   * Calls the AI API to determine if the condition is met.
+   */
+  private async evaluatePromptConditionLive(condition: string, userInput: string): Promise<boolean> {
     try {
-      // Build inputs object
-      const inputs: Record<string, unknown> = {};
-      for (const varName of config.inputVariables) {
-        inputs[varName] = this.state.variables[varName];
+      const response = await fetch("/api/canvas/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: userInput,
+          systemPrompt: `You are a transition evaluator. Determine if the user's message satisfies the following condition. Respond with ONLY "true" or "false".\n\nCondition: "${condition}"`,
+          conversationHistory: this.conversationHistory,
+          variables: this.state.variables,
+          temperature: 0.1,
+          maxTokens: 10,
+          model: "gpt-4o-mini",
+        }),
+      });
+
+      if (!response.ok) return false;
+
+      const data = await response.json();
+      const answer = (data.response || "").toLowerCase().trim();
+      return answer === "true" || answer.startsWith("true");
+    } catch {
+      // On error, fall back to simulation
+      return this.evaluatePromptConditionSimulated(condition, userInput);
+    }
+  }
+
+  // ============================================
+  // Conversation Helpers
+  // ============================================
+
+  /**
+   * Call the chat API for live mode conversation.
+   */
+  private async callChatAPI(
+    prompt: string,
+    config: ConversationConfig,
+    userInput?: string
+  ): Promise<string> {
+    try {
+      const response = await fetch("/api/canvas/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: userInput || "Hello",
+          systemPrompt: this.substituteVariables(prompt),
+          conversationHistory: this.conversationHistory,
+          variables: this.state.variables,
+          temperature: config.temperature || 0.7,
+          maxTokens: config.maxTokens || 300,
+          model: config.model || "gpt-4o-mini",
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to get AI response");
       }
 
-      // Execute in sandbox (simplified - in production use vm2 or similar)
-      const fn = new Function("inputs", config.code);
-      const result = fn(inputs);
-
-      return {
-        nextNodeId: this.getNextNodeId(node.id),
-        variableUpdates: {
-          [config.outputVariable]: result,
-        },
-      };
+      const data = await response.json();
+      return data.response || "I'm sorry, I couldn't generate a response.";
     } catch (error) {
-      return {
-        nextNodeId: this.getNextNodeId(node.id),
-        variableUpdates: {
-          [config.outputVariable]: null,
-        },
-        error: error instanceof Error ? error.message : "Function execution failed",
-      };
+      console.error("Live AI error:", error);
+      return error instanceof Error
+        ? `[AI Error: ${error.message}]`
+        : "I'm having trouble connecting. Please try again.";
     }
   }
 
   /**
-   * Get next node ID from default output
+   * Simulate a conversation response in simulation mode.
+   * Generates a contextual response based on the node prompt and user input.
+   */
+  private simulateConversationResponse(config: ConversationConfig, userInput?: string): string {
+    const prompt = config.content.content || "";
+    const input = (userInput || "").toLowerCase();
+
+    if (!userInput) {
+      return "How can I help you today?";
+    }
+
+    // Check for greetings
+    const greetings = ["hi", "hello", "hey", "good morning", "good afternoon"];
+    if (greetings.some((g) => input === g || input.startsWith(g + " "))) {
+      return "Hello! How can I assist you today?";
+    }
+
+    // Check for identity questions
+    if (input.includes("your name") || input.includes("who are you")) {
+      return "I'm an AI assistant here to help you. What can I do for you today?";
+    }
+
+    // Check context from the node prompt for relevant responses
+    const context = prompt.toLowerCase();
+
+    if (context.includes("medical") || context.includes("healthcare") || context.includes("doctor")) {
+      if (input.includes("appointment") || input.includes("schedule") || input.includes("book")) {
+        return "I'd be happy to help you schedule an appointment. Could you tell me your name and what type of appointment you need?";
+      }
+      if (input.includes("sick") || input.includes("pain") || input.includes("symptom")) {
+        return "I'm sorry to hear you're not feeling well. Can you describe your symptoms so I can help direct you to the right care?";
+      }
+    }
+
+    if (context.includes("schedule") || context.includes("appointment") || context.includes("booking")) {
+      return "I'd be happy to help with scheduling. Could you tell me what date and time works best for you?";
+    }
+
+    if (context.includes("collect") && context.includes("name")) {
+      return "Could you please tell me your name?";
+    }
+
+    // Default helpful response
+    return "I understand. Could you tell me more about what you need help with?";
+  }
+
+  // ============================================
+  // Utility Helpers
+  // ============================================
+
+  /**
+   * Get next node ID from default output edge
    */
   private getNextNodeId(nodeId: string): string | null {
     const edge = this.edges.find(
@@ -742,7 +917,7 @@ export class FlowExecutor {
   }
 
   /**
-   * Get next node ID for specific output handle
+   * Get next node ID for a specific output handle
    */
   private getNextNodeIdForHandle(nodeId: string, handle: string): string | null {
     const edge = this.edges.find(
@@ -752,7 +927,8 @@ export class FlowExecutor {
   }
 
   /**
-   * Substitute variables in template string
+   * Substitute variables in a template string.
+   * Replaces {{variableName}} and {{path.to.value}} with their current values.
    */
   private substituteVariables(template: string): string {
     return template.replace(/\{\{(\w+(?:\.\w+)*(?:\[\d+\])?(?:\.\w+)*)\}\}/g, (match, path) => {
@@ -776,7 +952,27 @@ export class FlowExecutor {
   }
 
   /**
-   * Add message to conversation
+   * Extract a value from a JSON object using a simple path expression.
+   * Supports dot notation: "data.items[0].name" or "$.data.count"
+   */
+  private extractJsonPath(data: unknown, path: string): unknown {
+    // Strip leading "$." if present
+    const cleanPath = path.startsWith("$.") ? path.slice(2) : path;
+    const parts = cleanPath.split(/\.|\[|\]/).filter(Boolean);
+
+    let value: unknown = data;
+    for (const part of parts) {
+      if (value && typeof value === "object") {
+        value = (value as Record<string, unknown>)[part];
+      } else {
+        return undefined;
+      }
+    }
+    return value;
+  }
+
+  /**
+   * Add a message to the conversation log
    */
   private addMessage(role: "agent" | "user" | "system", text: string, nodeId?: string): void {
     const message: ExecutionMessage = {
@@ -797,7 +993,8 @@ export class FlowExecutor {
 export function createExecutor(
   nodes: FlowNode[],
   edges: FlowEdge[],
-  variables: FlowVariable[]
+  variables: FlowVariable[],
+  mode?: TestModeType
 ): FlowExecutor {
-  return new FlowExecutor(nodes, edges, variables);
+  return new FlowExecutor(nodes, edges, variables, mode);
 }

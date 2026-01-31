@@ -119,14 +119,11 @@ export function FlowCanvas() {
           nodeColor={(node) => {
             const colorMap: Record<string, string> = {
               start: "#16a34a",
-              ai_agent: "#9333ea",
-              condition: "#ea580c",
-              set_variable: "#2563eb",
-              api_call: "#0891b2",
-              transfer: "#ca8a04",
-              end_call: "#dc2626",
-              knowledge_base: "#4f46e5",
+              conversation: "#9333ea",
               function: "#475569",
+              call_transfer: "#ca8a04",
+              set_variable: "#2563eb",
+              end: "#dc2626",
             };
             return colorMap[node.type || ""] || "#6b7280";
           }}

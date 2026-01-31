@@ -10,7 +10,20 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { getAuthenticatedUser } from "@/lib/auth";
-import type { IntentDefinition, EntityDefinition } from "@/lib/canvas/types";
+
+// Local types for intent/entity detection (used only by this API route)
+interface IntentDefinition {
+  name: string;
+  description: string;
+  examples: string[];
+}
+
+interface EntityDefinition {
+  name: string;
+  type: string;
+  description: string;
+  required?: boolean;
+}
 
 interface ChatRequest {
   message: string;
@@ -198,7 +211,7 @@ export async function POST(request: Request) {
     const toolCall = response.choices[0]?.message?.tool_calls?.[0];
     let structuredResponse: StructuredResponse;
 
-    if (toolCall?.function?.arguments) {
+    if (toolCall && toolCall.type === "function" && toolCall.function?.arguments) {
       try {
         structuredResponse = JSON.parse(toolCall.function.arguments);
       } catch {

@@ -1,44 +1,34 @@
 /**
  * Node Components Registry
  *
- * Maps node types to their React components for React Flow.
- * This registry is consumed by the canvas to render the correct
- * component for each node type.
+ * Maps the 6 node types to their React components for React Flow.
+ * Node types: start, conversation, function, call_transfer, set_variable, end
  *
  * @module components/canvas/nodes
  */
 
 import type { NodeTypes } from "@xyflow/react";
 import { StartNode } from "./start-node";
-import { AIAgentNode } from "./ai-agent-node";
-import { ConditionNode } from "./condition-node";
-import { SetVariableNode } from "./set-variable-node";
-import { APICallNode } from "./api-call-node";
-import { TransferNode } from "./transfer-node";
-import { EndCallNode } from "./end-call-node";
-import { KnowledgeBaseNode } from "./knowledge-base-node";
+import { ConversationNode } from "./conversation-node";
 import { FunctionNode } from "./function-node";
+import { CallTransferNode } from "./call-transfer-node";
+import { SetVariableNode } from "./set-variable-node";
+import { EndNode } from "./end-node";
 
 export const nodeTypes: NodeTypes = {
   start: StartNode,
-  ai_agent: AIAgentNode,
-  condition: ConditionNode,
-  set_variable: SetVariableNode,
-  api_call: APICallNode,
-  transfer: TransferNode,
-  end_call: EndCallNode,
-  knowledge_base: KnowledgeBaseNode,
+  conversation: ConversationNode,
   function: FunctionNode,
+  call_transfer: CallTransferNode,
+  set_variable: SetVariableNode,
+  end: EndNode,
 };
 
 export {
   StartNode,
-  AIAgentNode,
-  ConditionNode,
-  SetVariableNode,
-  APICallNode,
-  TransferNode,
-  EndCallNode,
-  KnowledgeBaseNode,
+  ConversationNode,
   FunctionNode,
+  CallTransferNode,
+  SetVariableNode,
+  EndNode,
 };

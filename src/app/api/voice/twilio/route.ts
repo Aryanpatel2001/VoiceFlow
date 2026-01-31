@@ -157,7 +157,7 @@ async function handleIncomingCall(params: TwilioParams, requestUrl: URL): Promis
     }
 
     const flow = flowResult.rows[0];
-    webhookId = flow.webhook_id;
+    webhookId = flow.webhook_id!;
     callerNumber = params.From;
     calleeNumber = params.To;
 

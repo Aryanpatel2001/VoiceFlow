@@ -2,6 +2,7 @@
  * Canvas Library
  *
  * Core library for the Agent Canvas flow builder.
+ * 6 node types: start, conversation, function, call_transfer, set_variable, end
  *
  * @module lib/canvas
  */
@@ -15,18 +16,15 @@ export {
   NODE_CATEGORIES,
   getDefaultConfig,
   getOutputHandles,
-  CONDITION_OPERATORS,
+  EQUATION_OPERATORS,
   HTTP_METHODS,
-  TRANSFER_TYPES,
+  LLM_MODELS,
   DEFAULT_START_CONFIG,
-  DEFAULT_AI_AGENT_CONFIG,
-  DEFAULT_CONDITION_CONFIG,
-  DEFAULT_SET_VARIABLE_CONFIG,
-  DEFAULT_API_CALL_CONFIG,
-  DEFAULT_TRANSFER_CONFIG,
-  DEFAULT_END_CALL_CONFIG,
-  DEFAULT_KNOWLEDGE_BASE_CONFIG,
+  DEFAULT_CONVERSATION_CONFIG,
   DEFAULT_FUNCTION_CONFIG,
+  DEFAULT_SET_VARIABLE_CONFIG,
+  DEFAULT_CALL_TRANSFER_CONFIG,
+  DEFAULT_END_CONFIG,
 } from "./node-configs";
 
 // Validation
