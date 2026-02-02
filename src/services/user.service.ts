@@ -149,7 +149,7 @@ export async function updateUser(
   input: UpdateUserInput
 ): Promise<User> {
   const updates: string[] = [];
-  const values: any[] = [];
+  const values: unknown[] = [];
   let paramCount = 1;
 
   if (input.firstName !== undefined) {
@@ -240,7 +240,7 @@ export interface Organization {
   phone: string | null;
   timezone: string;
   logo_url: string | null;
-  settings: Record<string, any>;
+  settings: Record<string, unknown>;
   created_at: Date;
   updated_at: Date;
 }
