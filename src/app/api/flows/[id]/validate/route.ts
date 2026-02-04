@@ -7,6 +7,7 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { getFlowById, validateFlowData } from "@/services/flow.service";
+import { validateSinglePromptConfig } from "@/lib/prompt-agent";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -40,13 +41,21 @@ export async function POST(request: Request, context: RouteContext) {
       }
     }
 
+    const flow = await getFlowById(id, user.organizationId);
+    if (!flow) {
+      return NextResponse.json({ error: "Flow not found" }, { status: 404 });
+    }
     if (!flowData) {
-      // Validate saved flow
-      const flow = await getFlowById(id, user.organizationId);
-      if (!flow) {
-        return NextResponse.json({ error: "Flow not found" }, { status: 404 });
-      }
       flowData = flow.flowData;
+    }
+
+    if (flow.agentMode === "single_prompt") {
+      const result = validateSinglePromptConfig(flow.flowData.settings.promptConfig);
+      return NextResponse.json({
+        valid: result.valid,
+        errors: result.errors.map((e) => ({ message: e })),
+        warnings: [],
+      });
     }
 
     const result = validateFlowData(flowData);

@@ -23,6 +23,7 @@ import {
   Check,
   Loader2,
   AlertTriangle,
+  PhoneCall,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCanvasStore, useEditorState, useHistory, useTestMode, useFlowMetadata } from "@/stores/canvas.store";
@@ -45,6 +46,7 @@ export function CanvasToolbar({ onToggleVariables, showVariables }: CanvasToolba
   const saveFlow = useCanvasStore((s) => s.saveFlow);
   const publishFlow = useCanvasStore((s) => s.publishFlow);
   const validate = useCanvasStore((s) => s.validate);
+  const flowId = useCanvasStore((s) => s.flowId);
 
   const handleSave = useCallback(async () => {
     try {
@@ -216,6 +218,21 @@ export function CanvasToolbar({ onToggleVariables, showVariables }: CanvasToolba
             Test
           </>
         )}
+      </button>
+
+      {/* Real Test Call */}
+      <button
+        onClick={() =>
+          router.push(
+            flowId
+              ? `/dashboard/test-call?flowId=${encodeURIComponent(flowId)}`
+              : "/dashboard/test-call"
+          )
+        }
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+      >
+        <PhoneCall className="h-4 w-4" />
+        Test Call
       </button>
 
       {/* Save */}

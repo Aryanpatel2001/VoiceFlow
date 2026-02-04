@@ -9,6 +9,10 @@
 
 import { query } from "@/lib/db";
 import { validateFlow } from "@/lib/canvas/validation";
+import {
+  mergeSinglePromptConfig,
+  validateSinglePromptConfig,
+} from "@/lib/prompt-agent";
 import type {
   Flow,
   FlowVersion,
@@ -19,6 +23,7 @@ import type {
   FlowSettings,
   ValidationResult,
 } from "@/lib/canvas/types";
+import type { AgentMode } from "@/lib/prompt-agent";
 
 // ============================================
 // Types (matching actual DB schema)
@@ -39,6 +44,7 @@ interface FlowRow {
   published_at: Date | null;
   created_at: Date;
   updated_at: Date;
+  agent_mode: AgentMode;
   // Production endpoint fields
   webhook_id: string | null;
   webhook_secret: string | null;
@@ -61,6 +67,7 @@ interface FlowVersionRow {
 export interface CreateFlowInput {
   name: string;
   description?: string;
+  agentMode?: AgentMode;
   nodes?: FlowNode[];
   edges?: FlowEdge[];
   variables?: FlowVariable[];
@@ -74,6 +81,7 @@ export interface UpdateFlowInput {
   edges?: FlowEdge[];
   variables?: FlowVariable[];
   settings?: Partial<FlowSettings>;
+  agentMode?: AgentMode;
 }
 
 // ============================================
@@ -97,6 +105,7 @@ export async function createFlow(
   organizationId: string,
   input: CreateFlowInput
 ): Promise<Flow> {
+  const agentMode = input.agentMode || "canvas";
   const nodes = input.nodes || [
     {
       id: "start_1",
@@ -119,19 +128,25 @@ export async function createFlow(
   ];
 
   const settings = { ...DEFAULT_SETTINGS, ...input.settings };
+  if (agentMode === "single_prompt") {
+    settings.promptConfig = mergeSinglePromptConfig(settings.promptConfig);
+  }
+  const nodesToStore = agentMode === "single_prompt" ? [] : nodes;
+  const edgesToStore = agentMode === "single_prompt" ? [] : edges;
 
   const result = await query<FlowRow>(
     `INSERT INTO flows (
-      organization_id, name, description, status,
+      organization_id, name, description, status, agent_mode,
       nodes, edges, variables, settings
-    ) VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7)
+    ) VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7, $8)
     RETURNING *`,
     [
       organizationId,
       input.name,
       input.description || null,
-      JSON.stringify(nodes),
-      JSON.stringify(edges),
+      agentMode,
+      JSON.stringify(nodesToStore),
+      JSON.stringify(edgesToStore),
       JSON.stringify(variables),
       JSON.stringify(settings),
     ]
@@ -296,25 +311,33 @@ export async function updateFlow(
   const updatedEdges = input.edges ?? current.flowData.edges;
   const updatedVariables = input.variables ?? current.flowData.variables;
   const updatedSettings = { ...current.flowData.settings, ...input.settings };
+  const updatedAgentMode = input.agentMode || current.agentMode || "canvas";
+  if (updatedAgentMode === "single_prompt" && !updatedSettings.promptConfig) {
+    updatedSettings.promptConfig = mergeSinglePromptConfig();
+  }
+  const nodesToStore = updatedAgentMode === "single_prompt" ? [] : updatedNodes;
+  const edgesToStore = updatedAgentMode === "single_prompt" ? [] : updatedEdges;
 
   const result = await query<FlowRow>(
     `UPDATE flows SET
       name = COALESCE($1, name),
       description = COALESCE($2, description),
-      nodes = $3,
-      edges = $4,
+      agent_mode = $3,
+      nodes = $4,
       variables = $5,
       settings = $6,
+      edges = $7,
       updated_at = NOW()
-     WHERE id = $7 AND organization_id = $8
+     WHERE id = $8 AND organization_id = $9
      RETURNING *`,
     [
       input.name || null,
       input.description !== undefined ? input.description : null,
-      JSON.stringify(updatedNodes),
-      JSON.stringify(updatedEdges),
+      updatedAgentMode,
+      JSON.stringify(nodesToStore),
       JSON.stringify(updatedVariables),
       JSON.stringify(updatedSettings),
+      JSON.stringify(edgesToStore),
       flowId,
       organizationId,
     ]
@@ -357,15 +380,24 @@ export async function publishFlow(
     return null;
   }
 
-  // Validate flow before publishing
-  const validation = validateFlow(
-    flow.flowData.nodes,
-    flow.flowData.edges,
-    flow.flowData.variables
-  );
+  if (flow.agentMode === "single_prompt") {
+    const promptValidation = validateSinglePromptConfig(
+      flow.flowData.settings.promptConfig
+    );
+    if (!promptValidation.valid) {
+      throw new Error(`Cannot publish: ${promptValidation.errors.join(", ")}`);
+    }
+  } else {
+    // Validate flow before publishing
+    const validation = validateFlow(
+      flow.flowData.nodes,
+      flow.flowData.edges,
+      flow.flowData.variables
+    );
 
-  if (!validation.valid) {
-    throw new Error(`Cannot publish: ${validation.errors.map((e) => e.message).join(", ")}`);
+    if (!validation.valid) {
+      throw new Error(`Cannot publish: ${validation.errors.map((e) => e.message).join(", ")}`);
+    }
   }
 
   // Get next version number
@@ -539,6 +571,7 @@ export async function duplicateFlow(
   return createFlow(organizationId, {
     name: `${original.name} (Copy)`,
     description: original.description,
+    agentMode: original.agentMode || "canvas",
     nodes: original.flowData.nodes,
     edges: original.flowData.edges,
     variables: original.flowData.variables,
@@ -593,6 +626,9 @@ function rowToFlow(row: FlowRow): Flow {
   const edges = parseJsonColumn<FlowEdge[]>(row.edges);
   const variables = parseJsonColumn<FlowVariable[]>(row.variables);
   const settings = parseJsonColumn<FlowSettings>(row.settings);
+  if (row.agent_mode === "single_prompt") {
+    settings.promptConfig = mergeSinglePromptConfig(settings.promptConfig);
+  }
 
   return {
     id: row.id,
@@ -609,6 +645,7 @@ function rowToFlow(row: FlowRow): Flow {
     webhookSecret: row.webhook_secret || undefined,
     deployedVersion: row.deployed_version || undefined,
     endpointEnabled: row.endpoint_enabled ?? false,
+    agentMode: row.agent_mode || "canvas",
   };
 }
 

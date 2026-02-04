@@ -10,9 +10,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { MoreVertical, Edit, Copy, Trash2, CheckCircle2, FileEdit } from "lucide-react";
+import { MoreVertical, Edit, Copy, Trash2, CheckCircle2, FileEdit, MessageCircle } from "lucide-react";
 import { useState, useCallback, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
+import type { AgentMode } from "@/lib/prompt-agent/types";
 
 interface FlowCardProps {
   flow: {
@@ -22,6 +23,7 @@ interface FlowCardProps {
     status: "draft" | "published";
     nodeCount: number;
     updatedAt: string;
+    agentMode?: AgentMode;
   };
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
@@ -154,7 +156,16 @@ export function FlowCard({ flow, onDuplicate, onDelete }: FlowCardProps) {
             )}
             {flow.status === "published" ? "Published" : "Draft"}
           </span>
-          <span>{flow.nodeCount} nodes</span>
+          <span className="flex items-center gap-1">
+            {flow.agentMode === "single_prompt" ? (
+              <>
+                <MessageCircle className="h-3 w-3" />
+                Prompt Agent
+              </>
+            ) : (
+              <>{flow.nodeCount} nodes</>
+            )}
+          </span>
           <span>{formatDate(flow.updatedAt)}</span>
         </div>
       </div>

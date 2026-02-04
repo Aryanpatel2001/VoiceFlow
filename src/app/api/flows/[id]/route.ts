@@ -65,7 +65,7 @@ export async function PATCH(request: Request, context: RouteContext) {
 
     const { id } = await context.params;
     const body = await request.json();
-    const { name, description, nodes, edges, variables, settings } = body;
+    const { name, description, nodes, edges, variables, settings, agentMode } = body;
 
     const flow = await updateFlow(id, user.organizationId, {
       name,
@@ -74,6 +74,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       edges,
       variables,
       settings,
+      agentMode,
     });
 
     if (!flow) {

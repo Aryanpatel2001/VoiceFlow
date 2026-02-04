@@ -15,6 +15,7 @@ import { Plus, Search, Loader2, LayoutGrid } from "lucide-react";
 import { FlowCard } from "./flow-card";
 import { TemplatePicker } from "./template-picker";
 import { FLOW_TEMPLATES } from "@/lib/canvas/templates";
+import type { AgentMode } from "@/lib/prompt-agent/types";
 
 interface Flow {
   id: string;
@@ -23,6 +24,7 @@ interface Flow {
   status: "draft" | "published";
   nodeCount: number;
   updatedAt: string;
+  agentMode?: AgentMode;
 }
 
 export function CanvasListContent() {
@@ -54,19 +56,30 @@ export function CanvasListContent() {
 
   // Create new flow
   const handleCreate = useCallback(
-    async (templateId: string | null) => {
+    async (selection: {
+      agentMode: AgentMode;
+      templateId: string | null;
+      name?: string;
+    }) => {
       setCreating(true);
       try {
-        const template = templateId
-          ? FLOW_TEMPLATES.find((t) => t.id === templateId)
+        const template = selection.templateId
+          ? FLOW_TEMPLATES.find((t) => t.id === selection.templateId)
           : null;
 
         const body: Record<string, unknown> = {
-          name: template ? template.name : "Untitled Flow",
+          name:
+            selection.name ||
+            (template
+              ? template.name
+              : selection.agentMode === "single_prompt"
+                ? "Untitled Prompt Agent"
+                : "Untitled Flow"),
           description: template?.description || "",
+          agentMode: selection.agentMode,
         };
 
-        if (template) {
+        if (template && selection.agentMode === "canvas") {
           body.nodes = template.nodes;
           body.edges = template.edges;
           body.variables = template.variables;

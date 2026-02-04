@@ -5,6 +5,7 @@ import { Plus, Trash2 } from "lucide-react";
 import type { FunctionConfig, ContentConfig, ResponseMapping } from "@/lib/canvas/types";
 import { HTTP_METHODS } from "@/lib/canvas/node-configs";
 import { TransitionEditor } from "./transition-editor";
+import { IntegrationActionPicker } from "@/components/integrations/integration-action-picker";
 
 interface FunctionFormProps {
   config: FunctionConfig;
@@ -12,7 +13,10 @@ interface FunctionFormProps {
 }
 
 export function FunctionForm({ config, onChange }: FunctionFormProps) {
-  const isHttp = config.executionType === "http";
+  const executionType = config.executionType || "http";
+  const isHttp = executionType === "http";
+  const isCode = executionType === "code";
+  const isIntegration = executionType === "integration";
   const hasBody = HTTP_METHODS.find((m) => m.value === config.method)?.hasBody ?? false;
 
   // --- Header helpers ---
@@ -125,17 +129,27 @@ export function FunctionForm({ config, onChange }: FunctionFormProps) {
                 : "bg-background text-muted-foreground hover:bg-muted/50"
             }`}
           >
-            HTTP Request
+            HTTP
           </button>
           <button
             onClick={() => onChange({ ...config, executionType: "code" })}
             className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
-              !isHttp
+              isCode
                 ? "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
                 : "bg-background text-muted-foreground hover:bg-muted/50"
             }`}
           >
-            Custom Code
+            Code
+          </button>
+          <button
+            onClick={() => onChange({ ...config, executionType: "integration" })}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+              isIntegration
+                ? "bg-violet-100 text-violet-700 dark:bg-violet-900 dark:text-violet-300"
+                : "bg-background text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            Integration
           </button>
         </div>
       </div>
@@ -275,7 +289,7 @@ export function FunctionForm({ config, onChange }: FunctionFormProps) {
       )}
 
       {/* ---- Code Config ---- */}
-      {!isHttp && (
+      {isCode && (
         <>
           <div>
             <label className="text-xs font-medium text-foreground mb-1.5 block">Code</label>
@@ -323,6 +337,22 @@ export function FunctionForm({ config, onChange }: FunctionFormProps) {
             />
           </div>
         </>
+      )}
+
+      {/* ---- Integration Config ---- */}
+      {isIntegration && (
+        <IntegrationActionPicker
+          provider={config.integrationProvider}
+          actionId={config.integrationAction}
+          inputs={config.integrationInputs}
+          outputs={config.integrationOutputs}
+          onChange={(update) =>
+            onChange({
+              ...config,
+              ...update,
+            })
+          }
+        />
       )}
 
       {/* ---- Common Settings ---- */}
