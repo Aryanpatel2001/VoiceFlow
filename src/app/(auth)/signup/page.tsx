@@ -102,7 +102,7 @@ export default function SignupPage() {
         router.push("/onboarding");
         router.refresh();
       }
-    } catch (err) {
+    } catch {
       setAuthError("An error occurred. Please try again.");
     } finally {
       setIsLoading(false);

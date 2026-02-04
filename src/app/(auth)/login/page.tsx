@@ -62,7 +62,7 @@ export default function LoginPage() {
         router.push(callbackUrl);
         router.refresh();
       }
-    } catch (err) {
+    } catch {
       setAuthError("An error occurred. Please try again.");
     } finally {
       setIsLoading(false);

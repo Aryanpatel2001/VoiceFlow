@@ -8,7 +8,7 @@
  * @see docs/features/01-database-setup.md
  */
 
-import { Pool, PoolClient, QueryResult } from "pg";
+import { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 
 // Database configuration from environment variables
 const dbConfig = {
@@ -52,9 +52,9 @@ export function getPool(): Pool {
  * @param params - Query parameters
  * @returns Query result
  */
-export async function query<T = any>(
+export async function query<T extends QueryResultRow = QueryResultRow>(
   text: string,
-  params?: any[]
+  params?: unknown[]
 ): Promise<QueryResult<T>> {
   const pool = getPool();
   const start = Date.now();
@@ -90,8 +90,8 @@ export async function getClient(): Promise<PoolClient> {
  * @param queries - Array of {text, params} objects
  * @returns Array of query results
  */
-export async function transaction<T = any>(
-  queries: Array<{ text: string; params?: any[] }>
+export async function transaction<T extends QueryResultRow = QueryResultRow>(
+  queries: Array<{ text: string; params?: unknown[] }>
 ): Promise<QueryResult<T>[]> {
   const client = await getClient();
 
