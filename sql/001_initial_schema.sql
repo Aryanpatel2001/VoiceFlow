@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS integrations (
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     provider VARCHAR(100) NOT NULL, -- google_calendar, salesforce, hubspot, slack, etc.
     status VARCHAR(50) DEFAULT 'connected', -- connected, disconnected, error
-    credentials JSONB, -- Encrypted OAuth tokens, API keys
+    credentials TEXT, -- Encrypted credentials string (AES-GCM ciphertext)
     settings JSONB DEFAULT '{}', -- Provider-specific settings
     last_sync_at TIMESTAMP,
     error_message TEXT,
