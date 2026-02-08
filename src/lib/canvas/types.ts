@@ -11,6 +11,7 @@
  */
 
 import type { Node, Edge } from "@xyflow/react";
+import type { AgentMode, SinglePromptConfig } from "@/lib/prompt-agent/types";
 
 // ============================================
 // Node Types (6 total)
@@ -107,11 +108,11 @@ export interface ConversationConfig {
 }
 
 // --- Function Node ---
-// Executes HTTP calls or custom JS. Agent stays silent by default.
+// Executes HTTP calls, custom JS, or integration actions. Agent stays silent by default.
 // Optionally speaks during execution ("Let me check that for you").
 export interface FunctionConfig {
   // Execution type
-  executionType: "http" | "code";
+  executionType: "http" | "code" | "integration";
 
   // HTTP config (when executionType == "http")
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -124,6 +125,12 @@ export interface FunctionConfig {
   code?: string; // JavaScript code
   inputVariables?: string[];
   outputVariable?: string;
+
+  // Integration config (when executionType == "integration")
+  integrationProvider?: string; // Provider slug (e.g. "google_calendar")
+  integrationAction?: string; // Action ID (e.g. "google_calendar.check_availability")
+  integrationInputs?: Record<string, string>; // action input name → {{variable}} template
+  integrationOutputs?: Record<string, string>; // action output name → flow variable name
 
   // Common settings
   timeout?: number;
@@ -215,6 +222,7 @@ export interface FlowSettings {
   transcribeCalls?: boolean;
   // Global prompt (persona, guardrails - available in every node)
   globalPrompt?: string;
+  promptConfig?: SinglePromptConfig;
 }
 
 export interface FlowMetadata {
@@ -247,6 +255,7 @@ export interface Flow {
   webhookSecret?: string;
   deployedVersion?: number;
   endpointEnabled?: boolean;
+  agentMode?: AgentMode;
 }
 
 export interface FlowVersion {

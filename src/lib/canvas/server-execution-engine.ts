@@ -298,6 +298,16 @@ export async function executeNode(
         if (config.outputVariable) {
           functionVariables[config.outputVariable as string] = codeResult;
         }
+      } else if (executionType === "integration") {
+        const integrationResult = await executeIntegrationAction(
+          config,
+          functionVariables
+        );
+        functionVariables = {
+          ...functionVariables,
+          ...integrationResult.mappedVariables,
+        };
+        functionVariables["_function_success"] = integrationResult.success;
       }
 
       // Evaluate transitions after execution
@@ -1082,6 +1092,100 @@ function executeCodeFunction(
   } catch (error) {
     console.error("[Function/Code] Execution error:", error);
     return null;
+  }
+}
+
+// ============================================
+// Integration Execution
+// ============================================
+
+/**
+ * Execute an integration action via the provider system.
+ * Requires _organization_id in flow variables to load credentials.
+ */
+async function executeIntegrationAction(
+  config: Record<string, unknown>,
+  variables: Record<string, unknown>
+): Promise<{
+  success: boolean;
+  mappedVariables: Record<string, unknown>;
+}> {
+  const providerSlug = config.integrationProvider as string;
+  const actionId = config.integrationAction as string;
+  const inputMappings = (config.integrationInputs as Record<string, string>) || {};
+  const outputMappings = (config.integrationOutputs as Record<string, string>) || {};
+  const organizationId = variables["_organization_id"] as string;
+
+  if (!providerSlug || !actionId) {
+    console.error("[Function/Integration] Missing provider or action");
+    return { success: false, mappedVariables: {} };
+  }
+
+  if (!organizationId) {
+    console.error("[Function/Integration] Missing _organization_id in variables");
+    return { success: false, mappedVariables: {} };
+  }
+
+  console.log(`[Function/Integration] Executing ${actionId} on ${providerSlug}`);
+
+  try {
+    // Dynamic imports to avoid circular dependencies
+    const { getProvider, isValidProvider } = await import("@/lib/integrations");
+    const { getIntegration, getDecryptedCredentials } = await import(
+      "@/services/integration.service"
+    );
+
+    // Validate provider slug
+    if (!isValidProvider(providerSlug)) {
+      console.error(`[Function/Integration] Invalid provider: ${providerSlug}`);
+      return { success: false, mappedVariables: { _integration_error: "Invalid provider" } };
+    }
+
+    // Load integration and decrypt credentials
+    const integration = await getIntegration(organizationId, providerSlug);
+    if (!integration || !integration.credentials) {
+      console.error(`[Function/Integration] No connected integration for ${providerSlug}`);
+      return { success: false, mappedVariables: { _integration_error: "Integration not connected" } };
+    }
+
+    const credentials = await getDecryptedCredentials(integration);
+    const provider = getProvider(providerSlug);
+
+    // Resolve input mappings: substitute {{variable}} templates
+    const inputs: Record<string, unknown> = {};
+    for (const [inputName, template] of Object.entries(inputMappings)) {
+      inputs[inputName] = substituteVariables(template, variables);
+    }
+
+    // Execute the action
+    const result = await provider.executeAction(actionId, inputs, credentials);
+
+    console.log(`[Function/Integration] Result: success=${result.success}`);
+
+    // Map outputs to flow variables
+    const mappedVariables: Record<string, unknown> = {};
+    for (const [outputName, variableName] of Object.entries(outputMappings)) {
+      if (variableName && result.data[outputName] !== undefined) {
+        mappedVariables[variableName] = result.data[outputName];
+      }
+    }
+
+    // Also expose all result data under _integration_result
+    mappedVariables["_integration_result"] = result.data;
+
+    if (result.error) {
+      mappedVariables["_integration_error"] = result.error;
+    }
+
+    return { success: result.success, mappedVariables };
+  } catch (error) {
+    console.error("[Function/Integration] Execution error:", error);
+    return {
+      success: false,
+      mappedVariables: {
+        _integration_error: error instanceof Error ? error.message : "Unknown error",
+      },
+    };
   }
 }
 

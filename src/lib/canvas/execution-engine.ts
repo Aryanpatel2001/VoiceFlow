@@ -427,6 +427,61 @@ export class FlowExecutor {
         variableUpdates["_function_status"] = "error";
         variableUpdates["_function_error"] = error instanceof Error ? error.message : "Code execution failed";
       }
+    } else if (config.executionType === "integration") {
+      // Integration action execution via API
+      if (this.mode === "live" && config.integrationProvider && config.integrationAction) {
+        try {
+          // Resolve input mappings
+          const inputs: Record<string, unknown> = {};
+          if (config.integrationInputs) {
+            for (const [inputName, template] of Object.entries(config.integrationInputs)) {
+              inputs[inputName] = this.substituteVariables(template);
+            }
+          }
+
+          const response = await fetch("/api/integrations/actions/execute", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              provider: config.integrationProvider,
+              actionId: config.integrationAction,
+              inputs,
+            }),
+          });
+
+          const data = await response.json();
+
+          if (data.result) {
+            // Map outputs to flow variables
+            if (config.integrationOutputs) {
+              for (const [outputName, variableName] of Object.entries(config.integrationOutputs)) {
+                if (variableName && data.result.data?.[outputName] !== undefined) {
+                  variableUpdates[variableName] = data.result.data[outputName];
+                }
+              }
+            }
+            variableUpdates["_function_status"] = data.result.success ? "success" : "error";
+            variableUpdates["_integration_result"] = data.result.data;
+          } else {
+            variableUpdates["_function_status"] = "error";
+            variableUpdates["_function_error"] = data.error || "Integration execution failed";
+          }
+        } catch (error) {
+          variableUpdates["_function_status"] = "error";
+          variableUpdates["_function_error"] = error instanceof Error ? error.message : "Integration execution failed";
+        }
+      } else {
+        // Simulation mode: simulate integration response
+        variableUpdates["_function_status"] = "success";
+        variableUpdates["_integration_result"] = { simulated: true };
+        if (config.integrationOutputs) {
+          for (const [, variableName] of Object.entries(config.integrationOutputs)) {
+            if (variableName) {
+              variableUpdates[variableName] = "simulated_value";
+            }
+          }
+        }
+      }
     }
 
     // Evaluate transitions after execution

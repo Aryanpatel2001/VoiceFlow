@@ -12,6 +12,7 @@ import {
   getFlowsByOrganization,
   importFromTemplate,
 } from "@/services/flow.service";
+import { mergeSinglePromptConfig } from "@/lib/prompt-agent";
 
 export async function GET(request: Request) {
   try {
@@ -63,7 +64,16 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { name, description, templateId, nodes, edges, variables, settings } = body;
+    const {
+      name,
+      description,
+      templateId,
+      nodes,
+      edges,
+      variables,
+      settings,
+      agentMode,
+    } = body;
 
     if (!name || typeof name !== "string") {
       return NextResponse.json(
@@ -74,10 +84,20 @@ export async function POST(request: Request) {
 
     let flow;
 
-    if (templateId) {
+    if (templateId && agentMode !== "single_prompt") {
       // Create from template
       flow = await importFromTemplate(user.organizationId, templateId, name);
     } else {
+      const normalizedAgentMode =
+        agentMode === "single_prompt" ? "single_prompt" : "canvas";
+      const normalizedSettings =
+        normalizedAgentMode === "single_prompt"
+          ? {
+              ...settings,
+              promptConfig: mergeSinglePromptConfig(settings?.promptConfig),
+            }
+          : settings;
+
       // Create blank or with provided data
       flow = await createFlow(user.organizationId, {
         name,
@@ -85,7 +105,8 @@ export async function POST(request: Request) {
         nodes,
         edges,
         variables,
-        settings,
+        settings: normalizedSettings,
+        agentMode: normalizedAgentMode,
       });
     }
 
