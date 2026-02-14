@@ -1,0 +1,733 @@
+openapi: 3.0.3
+info:
+  title: VoiceFlow Pro API
+  description: |
+    VoiceFlow Pro is an AI-powered voice agent platform that helps businesses automate
+    customer interactions through intelligent phone calls.
+
+    ## Authentication
+    All API endpoints require authentication using Bearer tokens. Include your API key
+    in the Authorization header:
+    ```
+    Authorization: Bearer YOUR_API_KEY
+    ```
+
+    ## Rate Limits
+    - Read endpoints: 100 requests/minute
+    - Write endpoints: 30 requests/minute
+    - Voice endpoints: 10 requests/minute
+
+    ## Webhooks
+    When a flow is published, it receives a unique webhook URL for receiving inbound calls.
+    Webhook requests include a signature header for verification.
+
+  version: 1.0.0
+  contact:
+    name: VoiceFlow Pro Support
+    email: support@voiceflowpro.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.voiceflowpro.com/v1
+    description: Production server
+  - url: http://localhost:3000/api
+    description: Local development
+
+tags:
+  - name: Flows
+    description: Manage conversation flows
+  - name: Calls
+    description: Call history and management
+  - name: Phone Numbers
+    description: Manage phone numbers
+  - name: Campaigns
+    description: Outbound campaign management
+  - name: Analytics
+    description: Analytics and reporting
+  - name: Webhooks
+    description: Webhook endpoints for inbound calls
+
+paths:
+  /flows:
+    get:
+      tags:
+        - Flows
+      summary: List all flows
+      description: Retrieve a list of all flows for your organization
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, published]
+          description: Filter by flow status
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+          description: Number of results to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: Number of results to skip
+      responses:
+        '200':
+          description: List of flows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  flows:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Flow'
+                  total:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Flows
+      summary: Create a new flow
+      description: Create a new conversation flow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  description: Flow name
+                description:
+                  type: string
+                  description: Flow description
+                agentMode:
+                  type: string
+                  enum: [canvas, single_prompt]
+                  default: canvas
+      responses:
+        '201':
+          description: Flow created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Flow'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /flows/{flowId}:
+    get:
+      tags:
+        - Flows
+      summary: Get flow by ID
+      parameters:
+        - name: flowId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Flow details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Flow'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags:
+        - Flows
+      summary: Update flow
+      parameters:
+        - name: flowId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                nodes:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FlowNode'
+                edges:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FlowEdge'
+      responses:
+        '200':
+          description: Flow updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Flow'
+
+    delete:
+      tags:
+        - Flows
+      summary: Delete flow
+      parameters:
+        - name: flowId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Flow deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /flows/{flowId}/publish:
+    post:
+      tags:
+        - Flows
+      summary: Publish flow
+      description: Publish the flow and create a new version
+      parameters:
+        - name: flowId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Flow published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowVersion'
+
+  /flows/{flowId}/versions:
+    get:
+      tags:
+        - Flows
+      summary: List flow versions
+      parameters:
+        - name: flowId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of versions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FlowVersion'
+                  total:
+                    type: integer
+
+  /calls:
+    get:
+      tags:
+        - Calls
+      summary: List calls
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [initiated, ringing, in_progress, completed, failed, no_answer]
+        - name: direction
+          in: query
+          schema:
+            type: string
+            enum: [inbound, outbound]
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of calls
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calls:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Call'
+                  total:
+                    type: integer
+
+  /calls/{callId}:
+    get:
+      tags:
+        - Calls
+      summary: Get call by ID
+      parameters:
+        - name: callId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Call details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Call'
+
+  /phone-numbers:
+    get:
+      tags:
+        - Phone Numbers
+      summary: List phone numbers
+      responses:
+        '200':
+          description: List of phone numbers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  phoneNumbers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PhoneNumber'
+
+    post:
+      tags:
+        - Phone Numbers
+      summary: Purchase phone number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - areaCode
+              properties:
+                areaCode:
+                  type: string
+                  description: Area code for the phone number
+                country:
+                  type: string
+                  default: US
+      responses:
+        '201':
+          description: Phone number purchased
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhoneNumber'
+
+  /campaigns:
+    get:
+      tags:
+        - Campaigns
+      summary: List campaigns
+      responses:
+        '200':
+          description: List of campaigns
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  campaigns:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Campaign'
+
+    post:
+      tags:
+        - Campaigns
+      summary: Create campaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - flowId
+                - phoneNumberId
+              properties:
+                name:
+                  type: string
+                flowId:
+                  type: string
+                  format: uuid
+                phoneNumberId:
+                  type: string
+                  format: uuid
+                scheduledAt:
+                  type: string
+                  format: date-time
+      responses:
+        '201':
+          description: Campaign created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Campaign'
+
+  /analytics:
+    get:
+      tags:
+        - Analytics
+      summary: Get analytics data
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+            enum: [7, 30, 90]
+          description: Number of days to analyze
+      responses:
+        '200':
+          description: Analytics data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsData'
+
+  /webhook/{webhookId}:
+    post:
+      tags:
+        - Webhooks
+      summary: Receive inbound call
+      description: Webhook endpoint called by Twilio when an inbound call is received
+      parameters:
+        - name: webhookId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Webhook-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC signature for request verification
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                CallSid:
+                  type: string
+                From:
+                  type: string
+                To:
+                  type: string
+      responses:
+        '200':
+          description: TwiML response
+          content:
+            application/xml:
+              schema:
+                type: string
+
+components:
+  schemas:
+    Flow:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [draft, published]
+        version:
+          type: integer
+        agentMode:
+          type: string
+          enum: [canvas, single_prompt]
+        nodeCount:
+          type: integer
+        webhookId:
+          type: string
+        endpointEnabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    FlowNode:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [start, conversation, function, call_transfer, set_variable, end]
+        position:
+          type: object
+          properties:
+            x:
+              type: number
+            y:
+              type: number
+        data:
+          type: object
+          properties:
+            label:
+              type: string
+            config:
+              type: object
+
+    FlowEdge:
+      type: object
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+        target:
+          type: string
+        sourceHandle:
+          type: string
+        targetHandle:
+          type: string
+
+    FlowVersion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        flowId:
+          type: string
+          format: uuid
+        versionNumber:
+          type: integer
+        publishedAt:
+          type: string
+          format: date-time
+        publishedBy:
+          type: string
+
+    Call:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        status:
+          type: string
+          enum: [initiated, ringing, in_progress, completed, failed, no_answer]
+        callerNumber:
+          type: string
+        calleeNumber:
+          type: string
+        durationSeconds:
+          type: integer
+        transcript:
+          type: string
+        sentimentLabel:
+          type: string
+          enum: [positive, neutral, negative]
+        primaryIntent:
+          type: string
+        recordingUrl:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+
+    PhoneNumber:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+        friendlyName:
+          type: string
+        status:
+          type: string
+          enum: [active, pending, inactive]
+        assignedFlowId:
+          type: string
+          format: uuid
+        capabilities:
+          type: object
+          properties:
+            voice:
+              type: boolean
+            sms:
+              type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    Campaign:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+          enum: [draft, scheduled, running, paused, completed, failed]
+        flowId:
+          type: string
+          format: uuid
+        phoneNumberId:
+          type: string
+          format: uuid
+        totalContacts:
+          type: integer
+        completedContacts:
+          type: integer
+        scheduledAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    AnalyticsData:
+      type: object
+      properties:
+        overview:
+          type: object
+          properties:
+            totalCalls:
+              type: integer
+            avgDuration:
+              type: number
+            successRate:
+              type: number
+            totalCost:
+              type: number
+        callVolume:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+              inbound:
+                type: integer
+              outbound:
+                type: integer
+        outcomes:
+          type: object
+          properties:
+            completed:
+              type: integer
+            failed:
+              type: integer
+            noAnswer:
+              type: integer
+
+  responses:
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: Unauthorized
+
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: Not found
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - bearerAuth: []
